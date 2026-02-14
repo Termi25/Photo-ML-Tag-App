@@ -1,0 +1,153 @@
+# Copyright (C) 2025
+# Licensed under the GPL-3.0 License.
+# Created for TagStudio: https://github.com/CyanVoxel/TagStudio
+
+
+import os
+from collections.abc import Callable
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from PySide6.QtGui import (
+    QAction,
+)
+from PySide6.QtWidgets import QMenu, QMenuBar
+from pytestqt.qtbot import QtBot
+
+from tagstudio.core.enums import ShowFilepathOption
+from tagstudio.core.library.alchemy.library import Library, LibraryStatus
+from tagstudio.core.library.alchemy.models import Entry
+from tagstudio.core.utils.types import unwrap
+from tagstudio.qt.controllers.preview_panel_controller import PreviewPanel
+from tagstudio.qt.mixed.settings_panel import SettingsPanel
+from tagstudio.qt.ts_qt import QtDriver
+
+
+# Tests to see if the file path setting is applied correctly
+@pytest.mark.parametrize(
+    "filepath_option",
+    [
+        ShowFilepathOption.SHOW_FULL_PATHS.value,
+        ShowFilepathOption.SHOW_RELATIVE_PATHS.value,
+        ShowFilepathOption.SHOW_FILENAMES_ONLY.value,
+    ],
+)
+def test_filepath_setting(qtbot: QtBot, qt_driver: QtDriver, filepath_option: ShowFilepathOption):
+    settings_panel = SettingsPanel(qt_driver)
+    qtbot.addWidget(settings_panel)
+
+    # Mock the update_recent_lib_menu method
+    with patch.object(qt_driver, "update_recent_lib_menu", return_value=None):
+        # Set the file path option
+        settings_panel.filepath_combobox.setCurrentIndex(filepath_option)
+        settings_panel.update_settings(qt_driver)
+
+        # Assert the setting is applied
+        assert qt_driver.settings.show_filepath == filepath_option
+
+
+# Tests to see if the file paths are being displayed correctly
+@pytest.mark.parametrize(
+    "filepath_option, expected_path",
+    [
+        (
+            ShowFilepathOption.SHOW_FULL_PATHS,
+            lambda library: Path(library.library_dir / "one/two/bar.md"),
+        ),
+        (ShowFilepathOption.SHOW_RELATIVE_PATHS, lambda _: Path("one/two/bar.md")),
+        (ShowFilepathOption.SHOW_FILENAMES_ONLY, lambda _: Path("bar.md")),
+    ],
+)
+def test_file_path_display(
+    qt_driver: QtDriver,
+    library: Library,
+    filepath_option: ShowFilepathOption,
+    expected_path: Callable[[Library], Path],
+):
+    panel = PreviewPanel(library, qt_driver)
+
+    # Select 2
+    qt_driver.toggle_item_selection(2, append=False, bridge=False)
+    panel.set_selection(qt_driver.selected)
+
+    qt_driver.settings.show_filepath = filepath_option
+
+    # Apply the mock value
+    entry = library.get_entry(2)
+    assert isinstance(entry, Entry)
+    filename = entry.path
+    panel._file_attributes_widget.update_stats(filepath=unwrap(library.library_dir) / filename)  # pyright: ignore[reportPrivateUsage]
+
+    # Generate the expected file string.
+    # This is copied directly from the file_attributes.py file
+    # can be imported as a function in the future
+    display_path: Path = expected_path(library)
+    file_str: str = ""
+    separator: str = f"<a style='color: #777777'><b>{os.path.sep}</a>"  # Gray
+    for i, part in enumerate(display_path.parts):
+        part_ = part.strip(os.path.sep)
+        if i != len(display_path.parts) - 1:
+            file_str += f"{'\u200b'.join(part_)}{separator}</b>"
+        else:
+            if file_str != "":
+                file_str += "<br>"
+            file_str += f"<b>{'\u200b'.join(part_)}</b>"
+
+    # Assert the file path is displayed correctly
+    assert panel._file_attributes_widget.file_label.text() == file_str  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    "filepath_option, expected_title",
+    [
+        (
+            ShowFilepathOption.SHOW_FULL_PATHS.value,
+            lambda path, base_title: f"{base_title} - Library '{path}'",
+        ),
+        (
+            ShowFilepathOption.SHOW_RELATIVE_PATHS.value,
+            lambda path, base_title: f"{base_title} - Library '{path.name}'",
+        ),
+        (
+            ShowFilepathOption.SHOW_FILENAMES_ONLY.value,
+            lambda path, base_title: f"{base_title} - Library '{path.name}'",
+        ),
+    ],
+)
+def test_title_update(
+    qt_driver: QtDriver,
+    filepath_option: ShowFilepathOption,
+    expected_title: Callable[[Path, str], str],
+    library_dir: Path,
+):
+    base_title = qt_driver.base_title
+
+    open_status = LibraryStatus(
+        success=True,
+        library_path=library_dir,
+        message="",
+        msg_description="",
+    )
+    # Set the file path option
+    qt_driver.settings.show_filepath = filepath_option
+    menu_bar = QMenuBar()
+
+    qt_driver.main_window.menu_bar.open_recent_library_menu = QMenu(menu_bar)
+    qt_driver.main_window.menu_bar.ignore_modal_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.save_library_backup_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.close_library_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.refresh_dir_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.tag_manager_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.color_manager_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.new_tag_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.fix_unlinked_entries_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.fix_dupe_files_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.clear_thumb_cache_action = QAction(menu_bar)
+    qt_driver.main_window.menu_bar.folders_to_tags_action = QAction(menu_bar)
+
+    # Trigger the update
+    qt_driver._init_library(library_dir, open_status)  # pyright: ignore[reportPrivateUsage]
+
+    # Assert the title is updated correctly
+    qt_driver.main_window.setWindowTitle.assert_called_with(expected_title(library_dir, base_title))  # pyright: ignore[reportAttributeAccessIssue]

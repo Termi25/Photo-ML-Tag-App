@@ -1,0 +1,122 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "TagStudio"
+description = "A User-Focused Photo & File Management System."
+version = "9.5.6"
+license = "GPL-3.0-only"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "chardet~=5.2",
+    "ffmpeg-python~=0.2",
+    "humanfriendly==10.*",
+    "mutagen~=1.47",
+    "numpy~=2.2",
+    "opencv_python~=4.11",
+    "Pillow>=10.2,<12",
+    "pillow-heif~=0.22",
+    "pillow-jxl-plugin~=1.3",
+    "py7zr==1.0.0",
+    "pydantic~=2.10",
+    "pydub~=0.25",
+    "PySide6==6.8.0.*",
+    "rarfile==4.2",
+    "rawpy~=0.24",
+    "Send2Trash~=1.8",
+    "SQLAlchemy~=2.0",
+    "srctools~=2.6",
+    "structlog~=25.3",
+    "toml~=0.10",
+    "typing_extensions~=4.13",
+    "ujson~=5.10",
+    "wcmatch==10.*",
+    "requests~=2.31.0",
+    "semver~=3.0.4",
+]
+
+[project.optional-dependencies]
+dev = ["tagstudio[mkdocs,mypy,pre-commit,pyinstaller,pytest,ruff]"]
+mkdocs = ["mkdocs-material[imaging]>=9.6.14", "mkdocs-redirects~=1.2"]
+mypy = ["mypy==1.15.0", "mypy-extensions==1.*", "types-ujson~=5.10"]
+pre-commit = ["pre-commit~=4.2"]
+pyinstaller = ["Pyinstaller~=6.13"]
+pytest = [
+    "pytest==8.3.5",
+    "pytest-cov==6.1.1",
+    "pytest-qt==4.4.0",
+    "syrupy==4.9.1",
+]
+ruff = ["ruff==0.11.8"]
+
+[project.gui-scripts]
+tagstudio = "tagstudio.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tagstudio"]
+
+[tool.mypy]
+mypy_path = ["src/tagstudio"]
+disable_error_code = [
+    "annotation-unchecked",
+    "func-returns-value",
+    "import-untyped",
+]
+explicit_package_bases = true
+ignore_missing_imports = true
+implicit_optional = true
+strict_optional = false
+warn_unused_ignores = true
+exclude = ["build", "dist"]
+
+[[tool.mypy.overrides]]
+module = "tagstudio.qt.main_window"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "tagstudio.qt.ui.home_ui"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "tagstudio.core.ts_core"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+#addopts = "-m 'not qt'"
+qt_api = "pyside6"
+
+[tool.pyright]
+ignore = [
+    ".venv/**",
+    "src/tagstudio/core/library/json/",
+    "src/tagstudio/qt/previews/vendored/pydub/",
+]
+include = ["src/tagstudio", "tests"]
+reportAny = false
+reportIgnoreCommentWithoutRule = false
+reportImplicitStringConcatenation = false
+reportMissingTypeArgument = false
+reportMissingTypeStubs = false
+# reportOptionalMemberAccess = false
+reportUnannotatedClassAttribute = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportUnknownMemberType = false
+reportUnusedCallResult = false
+
+[tool.ruff]
+exclude = ["home_ui.py", "resources.py", "resources_rc.py"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "D", "E", "F", "FBT003", "I", "N", "SIM", "T20", "UP"]
+ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "E402"]
+"src/tagstudio/qt/previews/vendored/**" = ["B", "E", "N", "UP", "SIM115"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
