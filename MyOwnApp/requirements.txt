@@ -1,0 +1,27 @@
+# ML-Enhanced Image Sorting Application Requirements
+
+# Core ML/DL libraries
+torch>=2.2.0
+torchvision>=0.17.0
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# Image processing
+Pillow>=10.0.0
+
+# File system monitoring
+watchdog>=3.0.0
+
+# GUI (usually comes with Python)
+# tkinter is built-in
+
+# Data persistence
+# sqlite3 is built-in
+
+# Optional: For better performance
+# If you have CUDA-capable GPU, install CUDA-enabled PyTorch:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Development dependencies (optional)
+# pytest==7.4.0
+# black==23.7.0

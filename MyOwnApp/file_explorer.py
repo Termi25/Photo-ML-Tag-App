@@ -1,25 +1,167 @@
 """
-Basic File Explorer
-A simple file explorer application using tkinter
+ML-Enhanced Image Sorting Application
+4-tier architecture with supervised/unsupervised learning capabilities
 """
 
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox, Canvas
+from tkinter import ttk, messagebox, Canvas, Toplevel, Scrollbar, simpledialog
 from pathlib import Path
 import platform
 import string
 from PIL import Image, ImageTk
+import threading
+import time
+
+# Import application modules
+from config import config_manager
+from data_layer import metadata_store, model_storage
+from logic_controller import logic_controller
+from ml_module import InferenceEngine, TrainingLoop
+from metrics import metrics_collector
+
+
+class TrainingProgressDialog:
+    """Dialog to show training progress with real-time updates"""
+    
+    def __init__(self, parent, title="Training Progress"):
+        self.window = Toplevel(parent)
+        self.window.title(title)
+        self.window.geometry("600x400")
+        self.window.resizable(False, False)
+        
+        # Make it modal
+        self.window.transient(parent)
+        self.window.grab_set()
+        
+        # Status label
+        self.status_label = ttk.Label(self.window, text="Initializing...", 
+                                     font=('Arial', 11, 'bold'))
+        self.status_label.pack(pady=10)
+        
+        # Metrics frame (train vs val accuracy)
+        metrics_frame = ttk.Frame(self.window)
+        metrics_frame.pack(pady=5)
+        
+        ttk.Label(metrics_frame, text="Train Acc:", font=('Arial', 9)).grid(row=0, column=0, padx=5)
+        self.train_acc_label = ttk.Label(metrics_frame, text="--", font=('Arial', 9, 'bold'), foreground='blue')
+        self.train_acc_label.grid(row=0, column=1, padx=5)
+        
+        ttk.Label(metrics_frame, text="Val Acc:", font=('Arial', 9)).grid(row=0, column=2, padx=5)
+        self.val_acc_label = ttk.Label(metrics_frame, text="--", font=('Arial', 9, 'bold'), foreground='green')
+        self.val_acc_label.grid(row=0, column=3, padx=5)
+        
+        ttk.Label(metrics_frame, text="Gap:", font=('Arial', 9)).grid(row=0, column=4, padx=5)
+        self.gap_label = ttk.Label(metrics_frame, text="--", font=('Arial', 9, 'bold'))
+        self.gap_label.grid(row=0, column=5, padx=5)
+        
+        # Warning label for overfitting
+        self.warning_label = ttk.Label(self.window, text="", font=('Arial', 9), foreground='red')
+        self.warning_label.pack(pady=2)
+        
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(self.window, variable=self.progress_var, 
+                                           maximum=100, length=550)
+        self.progress_bar.pack(pady=10, padx=25)
+        
+        # Details frame with scrollbar
+        details_frame = ttk.Frame(self.window)
+        details_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.details_text = tk.Text(details_frame, wrap=tk.WORD, height=15, 
+                                    font=('Consolas', 9))
+        scrollbar = ttk.Scrollbar(details_frame, command=self.details_text.yview)
+        self.details_text.configure(yscrollcommand=scrollbar.set)
+        
+        self.details_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Buttons frame
+        button_frame = ttk.Frame(self.window)
+        button_frame.pack(pady=10)
+        
+        self.close_button = ttk.Button(button_frame, text="Close", 
+                                       command=self.close, state=tk.DISABLED)
+        self.close_button.pack(side=tk.LEFT, padx=5)
+        
+        self.is_complete = False
+        self.is_cancelled = False
+    
+    def update_status(self, message):
+        """Update status label"""
+        self.status_label.config(text=message)
+        self.window.update()
+    
+    def update_progress(self, value):
+        """Update progress bar (0-100)"""
+        self.progress_var.set(value)
+        self.window.update()
+    
+    def add_detail(self, message):
+        """Add a detail message to the log"""
+        self.details_text.insert(tk.END, message + "\n")
+        self.details_text.see(tk.END)
+        self.window.update()
+    
+    def update_metrics(self, train_acc, val_acc, gap):
+        """Update the train/val accuracy display"""
+        self.train_acc_label.config(text=f"{train_acc:.1f}%")
+        self.val_acc_label.config(text=f"{val_acc:.1f}%")
+        self.gap_label.config(text=f"{gap:.1f}%")
+        
+        # Color code the gap
+        if gap > 15:
+            self.gap_label.config(foreground='red')
+            self.warning_label.config(text="⚠ Overfitting detected")
+        elif gap > 10:
+            self.gap_label.config(foreground='orange')
+            self.warning_label.config(text="")
+        else:
+            self.gap_label.config(foreground='green')
+            self.warning_label.config(text="")
+        
+        self.window.update()
+    
+    def mark_complete(self, success=True):
+        """Mark training as complete"""
+        self.is_complete = True
+        if success:
+            self.status_label.config(text="✓ Training Completed Successfully!")
+            self.progress_var.set(100)
+        else:
+            self.status_label.config(text="✗ Training Failed")
+        self.close_button.config(state=tk.NORMAL)
+        self.window.grab_release()
+    
+    def close(self):
+        """Close the dialog"""
+        if self.is_complete or messagebox.askyesno("Cancel", 
+                                                    "Training in progress. Cancel?"):
+            self.is_cancelled = True
+            self.window.destroy()
+    
+    def show(self):
+        """Show the dialog"""
+        # Center the window
+        self.window.update_idletasks()
+        x = (self.window.winfo_screenwidth() // 2) - (600 // 2)
+        y = (self.window.winfo_screenheight() // 2) - (400 // 2)
+        self.window.geometry(f'600x400+{x}+{y}')
 
 
 class FileExplorer:
     def __init__(self, root):
         self.root = root
-        self.root.title("File Explorer")
-        self.root.geometry("1100x700")
+        self.root.title("ML-Enhanced Image Sorting Application")
+        self.root.geometry("1400x800")
         
-        # Current directory
-        self.current_path = Path.home()
+        # Current directory - default to ExampleImageFolder
+        default_folder = Path(__file__).parent.parent / "ExampleImageFolder"
+        if default_folder.exists():
+            self.current_path = default_folder
+        else:
+            self.current_path = Path.home()
         
         # View mode: 'detailed' or 'icons'
         self.view_mode = 'detailed'
@@ -27,12 +169,46 @@ class FileExplorer:
         # Store image references to prevent garbage collection
         self.image_references = []
         
+        # Current selected image for tagging
+        self.selected_image_path = None
+        self.selected_image_tags = []
+        
+        # Initialize logic controller
+        self.controller = logic_controller
+        
         # Setup UI
         self.setup_ui()
+        
+        # Initialize controller with current directory
+        self.initialize_ml_system()
+        
+        # Load directory
         self.load_directory(self.current_path)
         
     def setup_ui(self):
-        """Setup the user interface"""
+        """Setup the user interface with ML components"""
+        # Menu bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Change Directory", command=self.navigate_to_path)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        
+        # ML menu
+        ml_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Machine Learning", menu=ml_menu)
+        ml_menu.add_command(label="Model Configuration", command=self.open_model_config)
+        ml_menu.add_command(label="Train from Folders", command=self.train_from_folders)
+        ml_menu.add_command(label="Train from Tags", command=self.train_from_tags)
+        ml_menu.add_command(label="Auto-Sort Images", command=self.auto_sort_images)
+        ml_menu.add_command(label="Unsupervised Clustering", command=self.run_clustering)
+        ml_menu.add_separator()
+        ml_menu.add_command(label="View Metrics", command=self.show_metrics)
+        
         # Top toolbar
         toolbar = ttk.Frame(self.root)
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
@@ -60,8 +236,15 @@ class FileExplorer:
         ttk.Label(toolbar, text="View:").pack(side=tk.LEFT, padx=2)
         self.detailed_btn = ttk.Button(toolbar, text="📋 Detailed", command=self.switch_to_detailed)
         self.detailed_btn.pack(side=tk.LEFT, padx=2)
-        self.icons_btn = ttk.Button(toolbar, text="🖼️ Large Icons", command=self.switch_to_icons)
+        self.icons_btn = ttk.Button(toolbar, text="🖼️ Gallery", command=self.switch_to_icons)
         self.icons_btn.pack(side=tk.LEFT, padx=2)
+        
+        # ML toolbar buttons
+        ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        ttk.Label(toolbar, text="ML Actions:").pack(side=tk.LEFT, padx=2)
+        
+        self.predict_btn = ttk.Button(toolbar, text="🤖 Predict Tags", command=self.predict_current_image_tags)
+        self.predict_btn.pack(side=tk.LEFT, padx=2)
         
         # Address bar
         ttk.Label(toolbar, text="Path:").pack(side=tk.LEFT, padx=(10, 2))
@@ -74,7 +257,7 @@ class FileExplorer:
         self.go_btn = ttk.Button(toolbar, text="Go", command=self.navigate_to_path)
         self.go_btn.pack(side=tk.LEFT, padx=2)
         
-        # Main container with left panel and content area
+        # Main container with left panel, content area, and right sidebar
         main_container = ttk.Frame(self.root)
         main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -101,7 +284,7 @@ class FileExplorer:
         # Populate drives
         self.populate_drives()
         
-        # Right panel - content area
+        # Center panel - content area
         self.content_frame = ttk.Frame(main_container)
         self.content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
@@ -112,8 +295,11 @@ class FileExplorer:
         # Show detailed view by default
         self.show_detailed_view()
         
+        # Right sidebar - Tag Management
+        self.setup_tag_sidebar(main_container)
+        
         # Status bar
-        self.status_var = tk.StringVar(value="Ready")
+        self.status_var = tk.StringVar(value="Ready - ML system initializing...")
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
@@ -213,8 +399,9 @@ class FileExplorer:
         self.detailed_frame.grid_rowconfigure(0, weight=1)
         self.detailed_frame.grid_columnconfigure(0, weight=1)
         
-        # Bind double-click event
+        # Bind double-click and single-click event
         self.tree.bind('<Double-1>', self.on_tree_double_click)
+        self.tree.bind('<ButtonRelease-1>', self.on_tree_single_click)
     
     def create_icons_view(self):
         """Create the large icons view"""
@@ -435,11 +622,19 @@ class FileExplorer:
         name_label = tk.Label(frame, text=name, font=('Arial', 9), bg='white', wraplength=120)
         name_label.pack()
         
-        # Bind double-click
+        # Bind double-click and single-click
         icon_label.bind('<Double-1>', lambda e: self.on_icon_double_click(path))
         name_label.bind('<Double-1>', lambda e: self.on_icon_double_click(path))
+        icon_label.bind('<Button-1>', lambda e: self.on_icon_single_click(path))
+        name_label.bind('<Button-1>', lambda e: self.on_icon_single_click(path))
         
         return frame
+    
+    def on_icon_single_click(self, path):
+        """Handle single-click on icon for selection"""
+        if path.is_file():
+            if path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.jfif']:
+                self.on_image_selected(str(path))
     
     def on_icon_double_click(self, path):
         """Handle double-click on icon"""
@@ -447,7 +642,10 @@ class FileExplorer:
             self.history.append(self.current_path)
             self.load_directory(path)
         elif path.is_file():
-            self.open_file(path)
+            if path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.jfif']:
+                self.on_image_selected(str(path))
+            else:
+                self.open_file(path)
     
     def add_tree_item(self, path, item_type):
         """Add an item to the tree view"""
@@ -485,6 +683,21 @@ class FileExplorer:
             size /= 1024.0
         return f"{size:.1f} PB"
     
+    def on_tree_single_click(self, event):
+        """Handle single-click on tree item for image selection"""
+        selection = self.tree.selection()
+        if not selection:
+            return
+        
+        item = selection[0]
+        item_text = self.tree.item(item, 'text')
+        new_path = self.current_path / item_text
+        
+        if new_path.is_file():
+            # Check if it's an image
+            if new_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.jfif']:
+                self.on_image_selected(str(new_path))
+    
     def on_tree_double_click(self, event):
         """Handle double-click on tree item"""
         selection = self.tree.selection()
@@ -499,8 +712,11 @@ class FileExplorer:
             self.history.append(self.current_path)
             self.load_directory(new_path)
         elif new_path.is_file():
-            # Open file with default application
-            self.open_file(new_path)
+            # For images, select them; for other files, open them
+            if new_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.jfif']:
+                self.on_image_selected(str(new_path))
+            else:
+                self.open_file(new_path)
     
     def on_double_click(self, event):
         """Legacy handler for backward compatibility"""
@@ -554,6 +770,487 @@ class FileExplorer:
         except Exception as e:
             messagebox.showerror("Error", f"Invalid path: {e}")
             self.path_var.set(str(self.current_path))
+    
+    def setup_tag_sidebar(self, parent):
+        """Setup the tag management sidebar"""
+        tag_sidebar = ttk.Frame(parent, width=250)
+        tag_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
+        tag_sidebar.pack_propagate(False)
+        
+        ttk.Label(tag_sidebar, text="Tag Management", font=('Arial', 10, 'bold')).pack(pady=5)
+        
+        # Selected image label
+        self.selected_image_label = ttk.Label(tag_sidebar, text="No image selected", wraplength=240)
+        self.selected_image_label.pack(pady=5)
+        
+        ttk.Separator(tag_sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+        
+        # Current tags section
+        ttk.Label(tag_sidebar, text="Current Tags:", font=('Arial', 9, 'bold')).pack(anchor='w', padx=5)
+        
+        # Tags listbox
+        tags_frame = ttk.Frame(tag_sidebar)
+        tags_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.tags_listbox = tk.Listbox(tags_frame, selectmode=tk.SINGLE, height=10)
+        tags_scrollbar = ttk.Scrollbar(tags_frame, orient=tk.VERTICAL, command=self.tags_listbox.yview)
+        self.tags_listbox.configure(yscrollcommand=tags_scrollbar.set)
+        
+        self.tags_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tags_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Tag operations
+        tag_ops_frame = ttk.Frame(tag_sidebar)
+        tag_ops_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(tag_ops_frame, text="Remove Tag", command=self.remove_selected_tag).pack(fill=tk.X, pady=2)
+        
+        ttk.Separator(tag_sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+        
+        # Add tag section
+        ttk.Label(tag_sidebar, text="Add Tag:", font=('Arial', 9, 'bold')).pack(anchor='w', padx=5)
+        
+        add_tag_frame = ttk.Frame(tag_sidebar)
+        add_tag_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.new_tag_entry = ttk.Entry(add_tag_frame)
+        self.new_tag_entry.pack(fill=tk.X, pady=2)
+        
+        ttk.Button(add_tag_frame, text="Add Manual Tag", command=self.add_manual_tag).pack(fill=tk.X, pady=2)
+        
+        ttk.Separator(tag_sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+        
+        # ML predictions section
+        ttk.Label(tag_sidebar, text="Predicted Tags:", font=('Arial', 9, 'bold')).pack(anchor='w', padx=5)
+        
+        predictions_frame = ttk.Frame(tag_sidebar)
+        predictions_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.predictions_listbox = tk.Listbox(predictions_frame, selectmode=tk.SINGLE, height=5)
+        pred_scrollbar = ttk.Scrollbar(predictions_frame, orient=tk.VERTICAL, command=self.predictions_listbox.yview)
+        self.predictions_listbox.configure(yscrollcommand=pred_scrollbar.set)
+        
+        self.predictions_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        pred_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        ttk.Button(tag_sidebar, text="Apply Selected Prediction", command=self.apply_selected_prediction, 
+                  ).pack(fill=tk.X, padx=5, pady=2)
+    
+    def initialize_ml_system(self):
+        """Initialize the ML system in background"""
+        def init_thread():
+            try:
+                self.controller.initialize(str(self.current_path))
+                self.status_var.set("ML system ready")
+            except Exception as e:
+                self.status_var.set(f"ML initialization error: {str(e)[:50]}")
+        
+        thread = threading.Thread(target=init_thread, daemon=True)
+        thread.start()
+    
+    def on_image_selected(self, image_path: str):
+        """Handle image selection for tagging"""
+        self.selected_image_path = image_path
+        path_obj = Path(image_path)
+        self.selected_image_label.config(text=f"Selected: .../{path_obj.name}")
+        
+        # Load current tags
+        self.load_image_tags()
+        
+        # Auto-predict if configured
+        if config_manager.app_config.supervised_mode:
+            self.predict_tags_for_selected()
+    
+    def load_image_tags(self):
+        """Load tags for selected image"""
+        if self.selected_image_path is None:
+            return
+        
+        self.tags_listbox.delete(0, tk.END)
+        tags = self.controller.tagging_engine.get_image_tags(self.selected_image_path)
+        self.selected_image_tags = tags
+        
+        for tag in tags:
+            confidence = tag.get('confidence', 1.0)
+            source = tag.get('source', 'unknown')
+            display_text = f"{tag['tag_name']} ({confidence:.2f}) [{source}]"
+            self.tags_listbox.insert(tk.END, display_text)
+    
+    def predict_tags_for_selected(self):
+        """Predict tags for currently selected image"""
+        if self.selected_image_path is None:
+            return
+        
+        self.predictions_listbox.delete(0, tk.END)
+        self.predictions_listbox.insert(tk.END, "Predicting...")
+        
+        def predict_thread():
+            try:
+                predictions = self.controller.tagging_engine.predict_tags_for_image(self.selected_image_path)
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self.display_predictions(predictions))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Prediction failed: {e}"))
+        
+        thread = threading.Thread(target=predict_thread, daemon=True)
+        thread.start()
+    
+    def display_predictions(self, predictions):
+        """Display predicted tags"""
+        self.predictions_listbox.delete(0, tk.END)
+        
+        if len(predictions) == 0:
+            self.predictions_listbox.insert(tk.END, "No predictions (model not loaded?)")
+            return
+        
+        for pred in predictions:
+            display_text = f"{pred['tag_name']} ({pred['confidence']:.2f})"
+            self.predictions_listbox.insert(tk.END, display_text)
+    
+    def predict_current_image_tags(self):
+        """Toolbar action to predict tags"""
+        if self.selected_image_path:
+            self.predict_tags_for_selected()
+        else:
+            messagebox.showinfo("Info", "Please select an image first")
+    
+    def add_manual_tag(self):
+        """Add a manual tag to selected image"""
+        if self.selected_image_path is None:
+            messagebox.showwarning("Warning", "No image selected")
+            return
+        
+        tag_name = self.new_tag_entry.get().strip()
+        if not tag_name:
+            messagebox.showwarning("Warning", "Please enter a tag name")
+            return
+        
+        try:
+            self.controller.tagging_engine.apply_manual_tag(
+                self.selected_image_path, 
+                tag_name, 
+                is_ground_truth=True
+            )
+            self.new_tag_entry.delete(0, tk.END)
+            self.load_image_tags()
+            self.status_var.set(f"Tag '{tag_name}' added")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to add tag: {e}")
+    
+    def remove_selected_tag(self):
+        """Remove selected tag from image"""
+        if self.selected_image_path is None:
+            messagebox.showwarning("Warning", "No image selected")
+            return
+        
+        selection = self.tags_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "No tag selected")
+            return
+        
+        idx = selection[0]
+        tag_data = self.selected_image_tags[idx]
+        tag_name = tag_data['tag_name']
+        
+        try:
+            self.controller.tagging_engine.remove_tag(self.selected_image_path, tag_name)
+            self.load_image_tags()
+            self.status_var.set(f"Tag '{tag_name}' removed")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to remove tag: {e}")
+    
+    def apply_selected_prediction(self):
+        """Apply selected predicted tag"""
+        if self.selected_image_path is None:
+            messagebox.showwarning("Warning", "No image selected")
+            return
+        
+        selection = self.predictions_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "No prediction selected")
+            return
+        
+        # Parse tag name from selection
+        pred_text = self.predictions_listbox.get(selection[0])
+        tag_name = pred_text.split(' (')[0]
+        
+        try:
+            self.controller.tagging_engine.apply_manual_tag(self.selected_image_path, tag_name)
+            self.load_image_tags()
+            self.status_var.set(f"Prediction '{tag_name}' applied")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to apply prediction: {e}")
+    
+    def open_model_config(self):
+        """Open model configuration dialog"""
+        config_window = Toplevel(self.root)
+        config_window.title("Model Configuration")
+        config_window.geometry("500x600")
+        
+        # Create notebook for different config sections
+        notebook = ttk.Notebook(config_window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Hyperparameters tab
+        hyper_frame = ttk.Frame(notebook)
+        notebook.add(hyper_frame, text="Hyperparameters")
+        
+        # Scrollable frame for hyperparameters
+        canvas = Canvas(hyper_frame)
+        scrollbar = Scrollbar(hyper_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Hyperparameter fields
+        hyper_params = config_manager.hyperparameters
+        entries = {}
+        
+        row = 0
+        for field, value in hyper_params.__dict__.items():
+            ttk.Label(scrollable_frame, text=f"{field}:").grid(row=row, column=0, sticky='w', padx=5, pady=5)
+            entry = ttk.Entry(scrollable_frame, width=20)
+            entry.insert(0, str(value))
+            entry.grid(row=row, column=1, padx=5, pady=5)
+            entries[field] = entry
+            row += 1
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Application config tab
+        app_frame = ttk.Frame(notebook)
+        notebook.add(app_frame, text="Application")
+        
+        app_entries = {}
+        app_config = config_manager.app_config
+        
+        row = 0
+        for field, value in app_config.__dict__.items():
+            ttk.Label(app_frame, text=f"{field}:").grid(row=row, column=0, sticky='w', padx=5, pady=5)
+            
+            if isinstance(value, bool):
+                var = tk.BooleanVar(value=value)
+                check = ttk.Checkbutton(app_frame, variable=var)
+                check.grid(row=row, column=1, padx=5, pady=5)
+                app_entries[field] = var
+            else:
+                entry = ttk.Entry(app_frame, width=30)
+                entry.insert(0, str(value))
+                entry.grid(row=row, column=1, padx=5, pady=5)
+                app_entries[field] = entry
+            row += 1
+        
+        # Save button
+        def save_config():
+            try:
+                # Save hyperparameters
+                for field, entry in entries.items():
+                    value = entry.get()
+                    # Convert to appropriate type
+                    try:
+                        if '.' in value:
+                            value = float(value)
+                        else:
+                            value = int(value)
+                    except:
+                        pass
+                    config_manager.update_hyperparameters(**{field: value})
+                
+                # Save app config
+                for field, widget in app_entries.items():
+                    if isinstance(widget, tk.BooleanVar):
+                        value = widget.get()
+                    else:
+                        value = widget.get()
+                    config_manager.update_app_config(**{field: value})
+                
+                messagebox.showinfo("Success", "Configuration saved")
+                config_window.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save config: {e}")
+        
+        ttk.Button(config_window, text="Save Configuration", command=save_config).pack(pady=10)
+    
+    def train_from_folders(self):
+        """Train model from folder structure with progress dialog"""
+        if not messagebox.askyesno("Confirm", 
+            "This will train a new model using the folder structure as labels. Continue?"):
+            return
+        
+        # Create progress dialog
+        progress_dialog = TrainingProgressDialog(self.root, "Training from Folders")
+        progress_dialog.show()
+        
+        # Setup progress callback
+        def progress_callback(msg_type, message):
+            if msg_type == 'status':
+                self.root.after(0, lambda: progress_dialog.update_status(message))
+            elif msg_type == 'detail':
+                self.root.after(0, lambda: progress_dialog.add_detail(message))
+            elif msg_type == 'progress':
+                self.root.after(0, lambda: progress_dialog.update_progress(message))
+            elif msg_type == 'metrics':
+                self.root.after(0, lambda m=message: progress_dialog.update_metrics(
+                    m['train_acc'], m['val_acc'], m['overfitting_gap']))
+            elif msg_type == 'complete':
+                self.root.after(0, lambda: progress_dialog.mark_complete(True))
+                self.root.after(0, lambda: self.status_var.set("Training completed successfully"))
+            elif msg_type == 'error':
+                self.root.after(0, lambda: progress_dialog.add_detail(f"ERROR: {message}"))
+                self.root.after(0, lambda: progress_dialog.mark_complete(False))
+        
+        def train_thread():
+            try:
+                # Set the progress callback
+                self.controller.training_manager.progress_callback = progress_callback
+                progress_callback('status', 'Initializing training...')
+                progress_callback('detail', f'Directory: {self.current_path}')
+                
+                self.controller.bootstrap_from_folders()
+                
+                # Wait for training to complete
+                while self.controller.training_manager.is_training:
+                    time.sleep(0.5)
+                
+            except Exception as e:
+                self.root.after(0, lambda: progress_callback('error', str(e)))
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Training failed: {e}"))
+        
+        thread = threading.Thread(target=train_thread, daemon=True)
+        thread.start()
+    
+    def train_from_tags(self):
+        """Train model from database tags with progress dialog"""
+        if not messagebox.askyesno("Confirm", 
+            "This will train a model using existing tags. Continue?"):
+            return
+        
+        # Create progress dialog
+        progress_dialog = TrainingProgressDialog(self.root, "Training from Tags")
+        progress_dialog.show()
+        
+        # Setup progress callback
+        def progress_callback(msg_type, message):
+            if msg_type == 'status':
+                self.root.after(0, lambda: progress_dialog.update_status(message))
+            elif msg_type == 'detail':
+                self.root.after(0, lambda: progress_dialog.add_detail(message))
+            elif msg_type == 'progress':
+                self.root.after(0, lambda: progress_dialog.update_progress(message))
+            elif msg_type == 'metrics':
+                self.root.after(0, lambda m=message: progress_dialog.update_metrics(
+                    m['train_acc'], m['val_acc'], m['overfitting_gap']))
+            elif msg_type == 'complete':
+                self.root.after(0, lambda: progress_dialog.mark_complete(True))
+                self.root.after(0, lambda: self.status_var.set("Training completed successfully"))
+            elif msg_type == 'error':
+                self.root.after(0, lambda: progress_dialog.add_detail(f"ERROR: {message}"))
+                self.root.after(0, lambda: progress_dialog.mark_complete(False))
+        
+        def train_thread():
+            try:
+                # Set the progress callback
+                self.controller.training_manager.progress_callback = progress_callback
+                progress_callback('status', 'Initializing training...')
+                progress_callback('detail', 'Loading tags from database...')
+                
+                self.controller.train_from_corrections()
+                
+                # Wait for training to complete
+                while self.controller.training_manager.is_training:
+                    time.sleep(0.5)
+                
+            except Exception as e:
+                self.root.after(0, lambda: progress_callback('error', str(e)))
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Training failed: {e}"))
+        
+        thread = threading.Thread(target=train_thread, daemon=True)
+        thread.start()
+    
+    def auto_sort_images(self):
+        """Auto-sort all images in current directory"""
+        if not messagebox.askyesno("Confirm", 
+            "This will predict tags for all images in the current directory. Continue?"):
+            return
+        
+        self.status_var.set("Auto-sorting in progress...")
+        
+        def sort_thread():
+            try:
+                results = self.controller.start_initial_sorting(auto_apply=True)
+                total = len(results)
+                self.root.after(0, lambda: messagebox.showinfo("Complete", 
+                    f"Auto-sorting completed for {total} images"))
+                self.root.after(0, lambda: self.status_var.set(f"Sorted {total} images"))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Auto-sorting failed: {e}"))
+        
+        thread = threading.Thread(target=sort_thread, daemon=True)
+        thread.start()
+    
+    def run_clustering(self):
+        """Run unsupervised clustering"""
+        n_clusters = tk.simpledialog.askinteger("Clustering", 
+            "Number of clusters:", initialvalue=10, minvalue=2, maxvalue=50)
+        
+        if n_clusters:
+            self.status_var.set("Clustering in progress...")
+            
+            def cluster_thread():
+                try:
+                    self.controller.perform_unsupervised_clustering(n_clusters)
+                    self.root.after(0, lambda: messagebox.showinfo("Complete", 
+                        f"Clustering completed with {n_clusters} clusters"))
+                    self.root.after(0, lambda: self.status_var.set("Clustering complete"))
+                except Exception as e:
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Clustering failed: {e}"))
+            
+            thread = threading.Thread(target=cluster_thread, daemon=True)
+            thread.start()
+    
+    def show_metrics(self):
+        """Show performance metrics"""
+        metrics_window = Toplevel(self.root)
+        metrics_window.title("Performance Metrics")
+        metrics_window.geometry("600x500")
+        
+        # Create text widget with scrollbar
+        text_frame = ttk.Frame(metrics_window)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        text_widget = tk.Text(text_frame, wrap=tk.WORD)
+        scrollbar = Scrollbar(text_frame, command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Get metrics summary
+        summary = metrics_collector.get_summary()
+        
+        metrics_text = "PERFORMANCE METRICS SUMMARY\n"
+        metrics_text += "=" * 50 + "\n\n"
+        metrics_text += f"Session ID: {summary['session_id']}\n"
+        metrics_text += f"Duration: {summary['duration']:.2f} seconds\n\n"
+        metrics_text += "INFERENCE METRICS:\n"
+        metrics_text += f"  Total Images Processed: {summary['images_processed']}\n"
+        metrics_text += f"  Avg Latency per Image: {summary['avg_inference_latency']*1000:.2f} ms\n\n"
+        metrics_text += "TRAINING METRICS:\n"
+        metrics_text += f"  Total Training Time: {summary['total_training_time']:.2f} seconds\n\n"
+        metrics_text += "ACCURACY METRICS:\n"
+        metrics_text += f"  Overall Accuracy: {summary['overall_accuracy']:.2f}%\n"
+        metrics_text += f"  Precision: {summary['precision']:.4f}\n"
+        metrics_text += f"  Recall: {summary['recall']:.4f}\n"
+        metrics_text += f"  F1 Score: {summary['f1_score']:.4f}\n"
+        
+        text_widget.insert(tk.END, metrics_text)
+        text_widget.config(state=tk.DISABLED)
+        
+        ttk.Button(metrics_window, text="Close", command=metrics_window.destroy).pack(pady=10)
 
 
 def main():

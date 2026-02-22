@@ -1,0 +1,51 @@
+# Example Image Folder
+ExampleImageFolder/
+
+# TagStudio files
+TagStudio-main/
+TagStudio_Analysis.md
+TagStudio*.md
+TagStudio_Analysis.pdf
+TagStudio-main.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# ML Model data
+MyOwnApp/data/
+MyOwnApp/models/
+*.pth
+*.pt
+*.onnx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
