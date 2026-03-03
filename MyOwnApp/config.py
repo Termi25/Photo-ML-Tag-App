@@ -21,7 +21,7 @@ class HyperParameters:
     
     # Model architecture
     embedding_dim: int = 128
-    hidden_layers: list = None
+    hidden_layers: list | None = None
     activation: str = 'relu'
     
     # Training behavior
@@ -80,11 +80,18 @@ class ApplicationConfig:
     # ML settings
     use_gpu: bool = True
     num_workers: int = 4
-    model_type: str = "resnet"  # Options: resnet, efficientnet, custom
+    model_type: str = "resnet18"  # Options: resnet18, resnet34, resnet50, efficientnet_b0, efficientnet_b1, mobilenet_v2, vgg16
     
     # Training mode
     supervised_mode: bool = True  # If False, uses unsupervised clustering
     bootstrap_from_folders: bool = True  # Use folder structure as initial labels
+    
+    # Tag settings
+    tag_root_folder: str = ""   # Root folder for folder-based tag extraction (empty = uses default_image_folder)
+    auto_folder_tags: bool = False  # Automatically add folder-path tags when registering images
+    
+    # Database settings
+    db_root_folder: str = ""    # Root folder for the single shared database (empty = uses app ./data/ dir)
     
     # Performance
     enable_metrics: bool = True

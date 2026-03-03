@@ -6,8 +6,10 @@ TagStudio-main/
 TagStudio_Analysis.md
 TagStudio*.md
 TagStudio_Analysis.pdf
+Research_Methodology_Findings.md
 TagStudio-main.zip
-
+*.docx
+*.pdf
 # Python
 __pycache__/
 *.py[cod]

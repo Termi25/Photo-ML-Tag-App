@@ -8,15 +8,21 @@ numpy>=1.24.0
 
 # Image processing
 Pillow>=10.0.0
+piexif>=1.1.3
 
 # File system monitoring
 watchdog>=3.0.0
 
 # GUI (usually comes with Python)
 # tkinter is built-in
+tkinterdnd2
+matplotlib>=3.7.0
 
 # Data persistence
 # sqlite3 is built-in
+
+# Optional: Redis cache for faster tag lookups
+redis>=5.0.0
 
 # Optional: For better performance
 # If you have CUDA-capable GPU, install CUDA-enabled PyTorch:

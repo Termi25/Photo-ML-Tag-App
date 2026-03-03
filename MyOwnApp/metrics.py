@@ -140,11 +140,15 @@ class MetricsCollector:
                     false_positives += 1
         
         # Calculate overall accuracy
+        overall_accuracy = 0.0
         if total_predictions > 0:
             overall_accuracy = (correct_predictions / total_predictions) * 100
             self.current_session['accuracy_metrics']['overall_accuracy'] = overall_accuracy
         
         # Calculate precision, recall, F1
+        precision = 0.0
+        recall = 0.0
+        f1_score = 0.0
         if (true_positives + false_positives) > 0:
             precision = true_positives / (true_positives + false_positives)
             self.current_session['accuracy_metrics']['precision'] = precision
@@ -285,7 +289,7 @@ class BenchmarkRunner:
         self.controller = controller
         self.metrics = metrics_collector
     
-    def run_full_benchmark(self, hyperparameter_configs: List[Dict[str, Any]] = None):
+    def run_full_benchmark(self, hyperparameter_configs: List[Dict[str, Any]] | None = None):
         """Run full benchmark with different configurations"""
         if hyperparameter_configs is None:
             # Default configurations to test

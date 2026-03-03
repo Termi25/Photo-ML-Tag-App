@@ -2,6 +2,9 @@
 Data Layer
 Handles persistent storage including image metadata (tags), model weights, and database operations.
 Decouples physical file location from semantic identity.
+
+Redis is used as an optional cache layer for faster repeated lookups.
+If Redis is not available, falls back to an in-memory LRU-style cache.
 """
 
 import sqlite3
@@ -11,19 +14,184 @@ from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 import pickle
 
+# Optional Redis import — falls back to in-memory cache if not installed/reachable
+_redis_lib: Any = None  # pre-bound so it is always defined regardless of import outcome
+try:
+    import redis as _redis_lib  # type: ignore[import-untyped,import-not-found]
+    _REDIS_AVAILABLE = True
+except Exception:
+    # Catches ImportError, ModuleNotFoundError, and any broken-install errors
+    _REDIS_AVAILABLE = False
+
+
+class TagCache:
+    """
+    Cache layer for image/tag lookups.  Uses Redis when available (fast, persistent between
+    process restarts) and transparently degrades to an in-memory dict otherwise.
+    """
+
+    _TTL = 3600  # seconds for Redis TTL
+
+    def __init__(self, host: str = 'localhost', port: int = 6379,
+                 redis_db: int = 0, max_memory_size: int = 4096):
+        self._client = None
+        self._mem: Dict[str, Any] = {}
+        self._order: List[str] = []      # insertion-order list for simple LRU eviction
+        self._max = max_memory_size
+
+        if _REDIS_AVAILABLE:
+            try:
+                c = _redis_lib.Redis(host=host, port=port, db=redis_db,
+                                     socket_connect_timeout=1, decode_responses=True)
+                c.ping()
+                self._client = c
+                print("✓ Redis cache connected (fast tag lookups enabled)")
+            except Exception as exc:
+                print(f"Redis not reachable ({exc}), using in-memory cache")
+
+    # ------------------------------------------------------------------
+    def get(self, key: str) -> Any:
+        if self._client:
+            try:
+                raw = self._client.get(key)
+                if raw is not None:
+                    return json.loads(raw)
+            except Exception:
+                pass
+        return self._mem.get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        serialised = json.dumps(value, default=str)
+        if self._client:
+            try:
+                self._client.setex(key, self._TTL, serialised)
+                return
+            except Exception:
+                pass
+        # In-memory path
+        if key not in self._mem:
+            if len(self._mem) >= self._max:
+                oldest = self._order.pop(0)
+                self._mem.pop(oldest, None)
+            self._order.append(key)
+        self._mem[key] = value
+
+    def delete(self, key: str) -> None:
+        if self._client:
+            try:
+                self._client.delete(key)
+            except Exception:
+                pass
+        self._mem.pop(key, None)
+        if key in self._order:
+            self._order.remove(key)
+
+    def delete_pattern(self, prefix: str) -> None:
+        """Delete all keys that start with *prefix*."""
+        if self._client:
+            try:
+                keys = self._client.keys(f"{prefix}*")
+                if keys:
+                    self._client.delete(*keys)
+            except Exception:
+                pass
+        for k in list(self._mem.keys()):
+            if k.startswith(prefix):
+                self.delete(k)
+
+    # Known key prefixes owned by this app (used for targeted Redis cleanup)
+    _KEY_PREFIXES = ('img:', 'tag_id:', 'image_tags:')
+    _KEY_SINGLES  = ('all_tags',)
+
+    def flush(self) -> None:
+        if self._client:
+            try:
+                # Delete ONLY the keys this app manages — never wipe the whole DB
+                keys_to_delete: list = []
+                for prefix in self._KEY_PREFIXES:
+                    keys_to_delete.extend(self._client.keys(f"{prefix}*"))
+                for single in self._KEY_SINGLES:
+                    keys_to_delete.extend(self._client.keys(single))
+                if keys_to_delete:
+                    self._client.delete(*keys_to_delete)
+            except Exception:
+                pass
+        self._mem.clear()
+        self._order.clear()
+
+    @property
+    def backend(self) -> str:
+        return "redis" if self._client else "memory"
+
+
+# Module-level shared cache instance
+_tag_cache = TagCache()
+
 
 class MetadataStore:
-    """SQLite-based metadata storage for image tags and properties"""
+    """SQLite-based metadata storage for image tags and properties,
+    with an optional Redis/in-memory cache for high-frequency reads."""
     
     def __init__(self, db_path: str = "./data/image_metadata.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = None
+        self.connection: sqlite3.Connection
+        self._cache = _tag_cache
         self.init_database()
+    
+    # ------------------------------------------------------------------
+    # Root-folder database management
+    # ------------------------------------------------------------------
+
+    def set_root_folder(self, root_folder: str) -> None:
+        """Place (or reuse) the single shared database at the *root_folder* level.
+
+        Call this once when the user opens a root folder via settings.
+        Navigating into sub-folders does NOT move the database.
+        """
+        if self.connection:
+            self.connection.close()
+
+        root_path = Path(root_folder)
+        self.db_path = root_path / ".image_tags.db"
+        root_path.mkdir(parents=True, exist_ok=True)
+        self._cache.flush()   # wipe cache on DB switch
+        self.init_database()
+        self._hide_database_file()
+        print(f"Database root set to: {self.db_path}")
+
+    def change_database_location(self, directory: str) -> None:
+        """Legacy helper — kept for API compatibility but now a no-op when
+        *directory* is just a sub-folder navigation.  The database stays in
+        whichever root folder was last set via ``set_root_folder``."""
+        # Only actually move the DB if the caller is explicitly setting a new
+        # root (i.e. this is the same path as our current db_path parent or a
+        # completely different root).  For ordinary sub-folder navigation the
+        # load_directory code should NOT call this anymore.
+        pass
+    
+    def _hide_database_file(self):
+        """Hide the database file on Windows"""
+        import platform
+        if platform.system() == 'Windows' and self.db_path.exists():
+            try:
+                import ctypes
+                # Set FILE_ATTRIBUTE_HIDDEN (0x02)
+                ctypes.windll.kernel32.SetFileAttributesW(str(self.db_path), 0x02)
+            except Exception as e:
+                # Silently fail if we can't hide the file
+                pass
     
     def init_database(self):
         """Initialize database schema"""
+        # Check if database is new
+        is_new_db = not self.db_path.exists()
+        
         self.connection = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # WAL mode: allows concurrent reads while a write is in progress,
+        # preventing the background training thread from blocking the UI thread.
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA synchronous=NORMAL")  # faster fsync, still safe with WAL
         cursor = self.connection.cursor()
         
         # Images table
@@ -93,35 +261,77 @@ class MetadataStore:
                 notes TEXT
             )
         ''')
-        
+
         # Create indexes for better performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_image_path ON images(file_path)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tag_name ON tags(tag_name)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_image_tag ON image_tags(image_id, tag_id)')
-        
+
+        # Migration: add 'hidden' column if it was not present in older databases
+        try:
+            cursor.execute('ALTER TABLE images ADD COLUMN hidden INTEGER DEFAULT 0')
+            self.connection.commit()
+        except Exception:
+            pass  # Column already exists
+
         self.connection.commit()
+        
+        # Hide the database file on Windows to prevent SQLite Browser from opening it
+        self._hide_database_file()
+        
         print(f"Database initialized at {self.db_path}")
     
-    def add_image(self, file_path: str, file_name: str, file_size: int = 0) -> int:
-        """Add an image to the database"""
+    def add_image(self, file_path: str, file_name: str, file_size: int = 0,
+                  commit: bool = True) -> int | None:
+        """Add an image to the database (normalizes path for consistency).
+
+        Pass ``commit=False`` when inserting inside a larger batch transaction
+        managed by the caller; remember to call ``connection.commit()`` afterwards.
+        """
         cursor = self.connection.cursor()
         now = datetime.now().isoformat()
+        
+        # Normalize path to absolute path for consistency
+        try:
+            normalized_path = str(Path(file_path).resolve())
+        except:
+            normalized_path = file_path
         
         try:
             cursor.execute('''
                 INSERT INTO images (file_path, file_name, file_size, added_to_db)
                 VALUES (?, ?, ?, ?)
-            ''', (file_path, file_name, file_size, now))
-            self.connection.commit()
-            return cursor.lastrowid
+            ''', (normalized_path, file_name, file_size, now))
+            if commit:
+                self.connection.commit()
+            image_id = cursor.lastrowid
+            # Invalidate any stale cached record for this path
+            self._cache.delete(f"img:{normalized_path}")
+            self._cache.delete(f"img:{file_path}")
+            return image_id
         except sqlite3.IntegrityError:
             # Image already exists, return its ID
+            cursor.execute('SELECT id FROM images WHERE file_path = ?', (normalized_path,))
+            result = cursor.fetchone()
+            if result:
+                return result[0]
+            
+            # Try fallback with original path in case it was stored differently
             cursor.execute('SELECT id FROM images WHERE file_path = ?', (file_path,))
             result = cursor.fetchone()
             return result[0] if result else None
     
-    def get_or_create_tag(self, tag_name: str, category: str = None, color: str = None) -> int:
-        """Get existing tag or create new one"""
+    def get_or_create_tag(self, tag_name: str, category: str | None = None,
+                           color: str | None = None, commit: bool = True) -> int:
+        """Get existing tag or create new one.
+
+        Pass ``commit=False`` inside a batch transaction managed by the caller.
+        """
+        cache_key = f"tag_id:{tag_name}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         cursor = self.connection.cursor()
         
         # Try to get existing tag
@@ -129,6 +339,7 @@ class MetadataStore:
         result = cursor.fetchone()
         
         if result:
+            self._cache.set(cache_key, result[0])
             return result[0]
         
         # Create new tag
@@ -137,11 +348,25 @@ class MetadataStore:
             INSERT INTO tags (tag_name, category, color, created_at)
             VALUES (?, ?, ?, ?)
         ''', (tag_name, category, color, now))
-        self.connection.commit()
-        return cursor.lastrowid
+        if commit:
+            self.connection.commit()
+        tag_id = cursor.lastrowid
+        if tag_id is None:
+            # Fallback: query for the just-created tag
+            cursor.execute('SELECT id FROM tags WHERE tag_name = ?', (tag_name,))
+            result = cursor.fetchone()
+            tag_id = result[0] if result else 0
+        # Invalidate the all-tags list cache
+        self._cache.delete('all_tags')
+        self._cache.set(cache_key, tag_id)
+        return tag_id
     
-    def add_image_tag(self, image_id: int, tag_id: int, confidence: float = 1.0, source: str = 'manual'):
-        """Associate a tag with an image"""
+    def add_image_tag(self, image_id: int, tag_id: int, confidence: float = 1.0,
+                      source: str = 'manual', commit: bool = True):
+        """Associate a tag with an image.
+
+        Pass ``commit=False`` inside a batch transaction managed by the caller.
+        """
         cursor = self.connection.cursor()
         now = datetime.now().isoformat()
         
@@ -150,7 +375,8 @@ class MetadataStore:
                 INSERT INTO image_tags (image_id, tag_id, confidence, source, created_at)
                 VALUES (?, ?, ?, ?, ?)
             ''', (image_id, tag_id, confidence, source, now))
-            self.connection.commit()
+            if commit:
+                self.connection.commit()
         except sqlite3.IntegrityError:
             # Update existing association
             cursor.execute('''
@@ -158,10 +384,18 @@ class MetadataStore:
                 SET confidence = ?, source = ?, created_at = ?
                 WHERE image_id = ? AND tag_id = ?
             ''', (confidence, source, now, image_id, tag_id))
-            self.connection.commit()
+            if commit:
+                self.connection.commit()
+        # Invalidate cached tag list for this image
+        self._cache.delete(f"image_tags:{image_id}")
     
     def get_image_tags(self, image_id: int) -> List[Dict[str, Any]]:
-        """Get all tags for an image"""
+        """Get all tags for an image (cached)"""
+        cache_key = f"image_tags:{image_id}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         cursor = self.connection.cursor()
         cursor.execute('''
             SELECT t.id, t.tag_name, t.category, t.color, it.confidence, it.source
@@ -181,16 +415,52 @@ class MetadataStore:
                 'confidence': row[4],
                 'source': row[5]
             })
+        self._cache.set(cache_key, results)
         return results
     
     def get_image_by_path(self, file_path: str) -> Optional[Dict[str, Any]]:
-        """Get image record by file path"""
+        """Get image record by file path (normalized, cached)"""
+        # Check cache first
+        try:
+            normalized_input = str(Path(file_path).resolve())
+        except:
+            normalized_input = file_path
+
+        cache_key = f"img:{normalized_input}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            # Return None sentinel stored as False
+            return cached if cached is not False else None
+
         cursor = self.connection.cursor()
+        
+        # Normalize the input path for comparison
+        try:
+            normalized_input = str(Path(file_path).resolve())
+        except:
+            normalized_input = file_path
+        
+        # First try exact match
         cursor.execute('SELECT * FROM images WHERE file_path = ?', (file_path,))
         row = cursor.fetchone()
         
+        # If not found, try normalized comparison
+        if not row:
+            cursor.execute('SELECT * FROM images')
+            all_images = cursor.fetchall()
+            
+            for img_row in all_images:
+                stored_path = img_row[1]
+                try:
+                    normalized_stored = str(Path(stored_path).resolve())
+                    if normalized_stored == normalized_input:
+                        row = img_row
+                        break
+                except:
+                    continue
+        
         if row:
-            return {
+            record = {
                 'id': row[0],
                 'file_path': row[1],
                 'file_name': row[2],
@@ -200,6 +470,10 @@ class MetadataStore:
                 'added_to_db': row[6],
                 'last_processed': row[7]
             }
+            self._cache.set(cache_key, record)
+            return record
+        # Store a False sentinel so we don't re-query for unknown paths repeatedly
+        self._cache.set(cache_key, False)
         return None
     
     def search_images_by_tags(self, tag_names: List[str], match_all: bool = True) -> List[Dict[str, Any]]:
@@ -241,7 +515,11 @@ class MetadataStore:
         return results
     
     def get_all_tags(self) -> List[Dict[str, Any]]:
-        """Get all tags in the system"""
+        """Get all tags in the system (cached)"""
+        cached = self._cache.get('all_tags')
+        if cached is not None:
+            return cached
+
         cursor = self.connection.cursor()
         cursor.execute('SELECT id, tag_name, category, color FROM tags ORDER BY tag_name')
         
@@ -253,6 +531,7 @@ class MetadataStore:
                 'category': row[2],
                 'color': row[3]
             })
+        self._cache.set('all_tags', results)
         return results
     
     def remove_image_tag(self, image_id: int, tag_id: int):
@@ -260,6 +539,7 @@ class MetadataStore:
         cursor = self.connection.cursor()
         cursor.execute('DELETE FROM image_tags WHERE image_id = ? AND tag_id = ?', (image_id, tag_id))
         self.connection.commit()
+        self._cache.delete(f"image_tags:{image_id}")
     
     def update_last_processed(self, image_id: int):
         """Update the last processed timestamp"""
@@ -267,7 +547,86 @@ class MetadataStore:
         now = datetime.now().isoformat()
         cursor.execute('UPDATE images SET last_processed = ? WHERE id = ?', (now, image_id))
         self.connection.commit()
-    
+
+    # ------------------------------------------------------------------
+    # Hidden-image management
+    # ------------------------------------------------------------------
+
+    def set_image_hidden(self, image_id: int, hidden: bool) -> None:
+        """Mark or unmark an image as hidden inside the app database."""
+        cursor = self.connection.cursor()
+        cursor.execute('UPDATE images SET hidden = ? WHERE id = ?',
+                       (1 if hidden else 0, image_id))
+        self.connection.commit()
+        # Invalidate cached record so the next read sees the new flag
+        cursor.execute('SELECT file_path FROM images WHERE id = ?', (image_id,))
+        row = cursor.fetchone()
+        if row:
+            self._cache.delete(f"img:{row[0]}")
+            try:
+                self._cache.delete(f"img:{Path(row[0]).resolve()}")
+            except Exception:
+                pass
+
+    def is_image_hidden(self, image_id: int) -> bool:
+        """Return True if the image is marked hidden in the app database."""
+        cursor = self.connection.cursor()
+        cursor.execute('SELECT hidden FROM images WHERE id = ?', (image_id,))
+        row = cursor.fetchone()
+        return bool(row[0]) if (row and row[0]) else False
+
+    def get_hidden_image_paths_in_folder(self, folder: str) -> set:
+        """Return the set of absolute file paths that are marked hidden
+        and whose path starts with *folder*."""
+        folder_norm = str(Path(folder).resolve()).replace('\\', '/')
+        cursor = self.connection.cursor()
+        cursor.execute('SELECT file_path FROM images WHERE hidden = 1')
+        result: set = set()
+        for (fp,) in cursor.fetchall():
+            try:
+                norm = str(Path(fp).resolve()).replace('\\', '/')
+                if norm.startswith(folder_norm):
+                    result.add(str(Path(fp).resolve()))
+            except Exception:
+                pass
+        return result
+
+    # ------------------------------------------------------------------
+    # Orphan database cleanup
+    # ------------------------------------------------------------------
+
+    def clean_orphan_databases(self, root_folder: str) -> List[str]:
+        """Delete every ``.image_tags.db`` found under *root_folder* that is
+        **not** the currently active database.  Also removes the built-in
+        default ``./data/image_metadata.db`` if it differs from the active DB.
+
+        Returns a list of removed file paths.
+        """
+        current_db = self.db_path.resolve()
+        removed: List[str] = []
+
+        # Walk the root tree looking for stale .image_tags.db files
+        for db_file in Path(root_folder).rglob('.image_tags.db'):
+            if db_file.resolve() != current_db:
+                try:
+                    db_file.unlink()
+                    removed.append(str(db_file))
+                    print(f"Removed orphan database: {db_file}")
+                except Exception as exc:
+                    print(f"Could not remove {db_file}: {exc}")
+
+        # Optionally remove the original default DB in ./data/
+        default_db = (Path(__file__).parent / 'data' / 'image_metadata.db').resolve()
+        if default_db != current_db and default_db.exists():
+            try:
+                default_db.unlink()
+                removed.append(str(default_db))
+                print(f"Removed default orphan database: {default_db}")
+            except Exception as exc:
+                print(f"Could not remove default DB: {exc}")
+
+        return removed
+
     def add_ground_truth(self, image_id: int, tag_id: int, verified_by: str = 'user'):
         """Add ground truth annotation"""
         cursor = self.connection.cursor()
@@ -308,53 +667,127 @@ class MetadataStore:
 
 
 class ModelStorage:
-    """Handles saving and loading of ML model weights"""
-    
+    """Handles saving and loading of ML model weights.
+
+    Directory layout (rooted at the user's chosen root folder)::
+
+        <root>/
+          ML_Training_Data/
+            model_folder/          ← pickle weights + metadata JSON
+            data_training_graphs/  ← accuracy/loss PNG + training JSON stats
+
+    File naming convention:
+        model_<type>_<YYYYMMDD_HHMMSS>.pkl
+        model_<type>_<YYYYMMDD_HHMMSS>_metadata.json
+        training_<type>_<YYYYMMDD_HHMMSS>.json
+        graph_<graphtype>_<YYYYMMDD_HHMMSS>.png
+
+    A ``latest_weights.pkl`` / ``latest_metadata.json`` pair is also kept so
+    that InferenceEngine.load_model('latest') continues to work without scanning.
+    """
+
+    _ML_ROOT        = 'ML_Training_Data'
+    _MODEL_FOLDER   = 'model_folder'
+    _GRAPH_FOLDER   = 'data_training_graphs'
+
     def __init__(self, models_dir: str = "./data/models"):
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
-    
-    def save_model_weights(self, model_state: Any, model_name: str, metadata: Dict[str, Any] = None):
-        """Save model weights and metadata"""
-        model_path = self.models_dir / f"{model_name}_weights.pkl"
-        metadata_path = self.models_dir / f"{model_name}_metadata.json"
-        
-        # Save model weights (using pickle for flexibility with different frameworks)
-        with open(model_path, 'wb') as f:
-            pickle.dump(model_state, f)
-        
-        # Save metadata
+        # graphs / stats land next to models by default until a root is set
+        self.graphs_dir: Path = self.models_dir.parent / 'training_graphs'
+        self.graphs_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+
+    def set_root_folder(self, root_folder: str) -> None:
+        """Point both storage directories at the ML_Training_Data subtree."""
+        root = Path(root_folder)
+        ml_root = root / self._ML_ROOT
+        self.models_dir = ml_root / self._MODEL_FOLDER
+        self.graphs_dir = ml_root / self._GRAPH_FOLDER
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        self.graphs_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Model storage  : {self.models_dir}")
+        print(f"Graph storage  : {self.graphs_dir}")
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ts() -> str:
+        return datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    def save_model_weights(self, model_state: Any, model_name: str,
+                           metadata: Dict[str, Any] | None = None):
+        """Save model weights and metadata.
+
+        Writes:
+        * ``<model_name>_weights.pkl`` + ``<model_name>_metadata.json``  (legacy / auto-load)
+        * ``model_<type>_<ts>.pkl``    + ``model_<type>_<ts>_metadata.json``  (timestamped)
+        """
         if metadata is None:
             metadata = {}
-        
-        metadata['saved_at'] = datetime.now().isoformat()
+        metadata['saved_at']   = datetime.now().isoformat()
         metadata['model_name'] = model_name
-        
-        with open(metadata_path, 'w') as f:
+
+        ts         = self._ts()
+        model_type = metadata.get('model_type', model_name)
+
+        # ---- legacy "latest" files kept for InferenceEngine.load_model('latest') ----
+        legacy_weights  = self.models_dir / f"{model_name}_weights.pkl"
+        legacy_metadata = self.models_dir / f"{model_name}_metadata.json"
+        with open(legacy_weights, 'wb') as f:
+            pickle.dump(model_state, f)
+        with open(legacy_metadata, 'w') as f:
             json.dump(metadata, f, indent=2)
-        
-        print(f"Model saved: {model_path}")
-    
+
+        # ---- timestamped copy ----
+        stamp_weights  = self.models_dir / f"model_{model_type}_{ts}.pkl"
+        stamp_metadata = self.models_dir / f"model_{model_type}_{ts}_metadata.json"
+        with open(stamp_weights, 'wb') as f:
+            pickle.dump(model_state, f)
+        with open(stamp_metadata, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        print(f"Model saved           : {legacy_weights}")
+        print(f"Model saved (stamped) : {stamp_weights}")
+
+    def save_training_stats(self, stats: Dict[str, Any], model_type: str) -> Path:
+        """Persist training statistics JSON to ``training_<type>_<ts>.json``."""
+        ts   = self._ts()
+        path = self.graphs_dir / f"training_{model_type}_{ts}.json"
+        payload = dict(stats)
+        payload['saved_at'] = datetime.now().isoformat()
+        with open(path, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+        print(f"Training stats saved  : {path}")
+        return path
+
+    def save_training_graph(self, fig: Any, graph_type: str, model_type: str) -> Path:
+        """Save a matplotlib Figure as ``graph_<type>_<ts>.png``."""
+        ts   = self._ts()
+        path = self.graphs_dir / f"graph_{graph_type}_{ts}.png"
+        fig.savefig(str(path), dpi=150, bbox_inches='tight')
+        print(f"Graph saved           : {path}")
+        return path
+
     def load_model_weights(self, model_name: str) -> tuple:
         """Load model weights and metadata"""
-        model_path = self.models_dir / f"{model_name}_weights.pkl"
+        model_path    = self.models_dir / f"{model_name}_weights.pkl"
         metadata_path = self.models_dir / f"{model_name}_metadata.json"
-        
+
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
-        
-        # Load weights
+
         with open(model_path, 'rb') as f:
             model_state = pickle.load(f)
-        
-        # Load metadata
-        metadata = {}
+
+        metadata: Dict[str, Any] = {}
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
-        
+
         return model_state, metadata
-    
+
     def list_models(self) -> List[str]:
         """List all available models"""
         models = []
@@ -362,22 +795,19 @@ class ModelStorage:
             model_name = file.stem.replace('_weights', '')
             models.append(model_name)
         return models
-    
+
     def model_exists(self, model_name: str) -> bool:
         """Check if model exists"""
-        model_path = self.models_dir / f"{model_name}_weights.pkl"
-        return model_path.exists()
-    
+        return (self.models_dir / f"{model_name}_weights.pkl").exists()
+
     def delete_model(self, model_name: str):
         """Delete a model and its metadata"""
-        model_path = self.models_dir / f"{model_name}_weights.pkl"
+        model_path    = self.models_dir / f"{model_name}_weights.pkl"
         metadata_path = self.models_dir / f"{model_name}_metadata.json"
-        
         if model_path.exists():
             model_path.unlink()
         if metadata_path.exists():
             metadata_path.unlink()
-        
         print(f"Model deleted: {model_name}")
 
 
