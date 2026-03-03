@@ -67,7 +67,7 @@ The application follows a clean **4-tier architecture**:
 │         TIER 3: ML Module                          │
 │   ml_module.py                                     │
 │   - Image Preprocessor                             │
-│   - Inference Engine (ResNet18 / EfficientNet-B0)  │
+│   - Inference Engine (7 backbone architectures)    │
 │   - Training Loop (supervised + fine-tuning)       │
 │   - Unsupervised Clustering (K-means)              │
 └───────────────────────┬────────────────────────────┘
@@ -247,7 +247,7 @@ Edit `config.json` (auto-created on first run) or use the in-app **Model Configu
     "max_suggestions": 5          // Max predicted tags shown per image
   },
   "app_config": {
-    "model_type": "resnet18",         // "resnet18" | "efficientnet_b0"
+    "model_type": "resnet18",         // resnet18 | resnet34 | resnet50 | efficientnet_b0 | efficientnet_b1 | mobilenet_v2 | vgg16
     "use_gpu": true,
     "supervised_mode": true,
     "bootstrap_from_folders": true,
@@ -261,12 +261,19 @@ Edit `config.json` (auto-created on first run) or use the in-app **Model Configu
 
 ## ML Models Supported
 
-| Backbone | Parameters | Notes |
-|---|---|---|
-| **ResNet-18** | ~11 M | Fast training, good for smaller datasets |
-| **EfficientNet-B0** | ~5.3 M | Higher accuracy, slightly slower |
+All backbones are loaded with ImageNet pre-trained weights and fine-tuned on the user's image collection via a custom classification head (`hidden_layers` → `num_classes`). Set `model_type` in `config.json` to the value in the **Config key** column.
 
-Both are initialised with ImageNet pre-trained weights and fine-tuned on the user's image collection using a custom classification head.
+| Backbone | Config key | Params (M) | ImageNet Top-1 (%) | Input Size | Feature Dim | Architecture Family |
+|---|---|---|---|---|---|---|
+| **ResNet-18** | `resnet18` | 11.7 | 69.8 | 224×224 | 512 | Residual Networks |
+| **ResNet-34** | `resnet34` | 21.8 | 73.3 | 224×224 | 512 | Residual Networks |
+| **ResNet-50** | `resnet50` | 25.6 | 76.1 | 224×224 | 2048 | Residual Networks |
+| **EfficientNet-B0** | `efficientnet_b0` | 5.3 | 77.1 | 224×224 | 1280 | Compound Scaling |
+| **EfficientNet-B1** | `efficientnet_b1` | 7.8 | 78.8 | 240×240 | 1280 | Compound Scaling |
+| **MobileNet V2** | `mobilenet_v2` | 3.4 | 71.9 | 224×224 | 1280 | Inverted Residuals |
+| **VGG-16** | `vgg16` | 138.4 | 71.6 | 224×224 | 4096 | Sequential Convolutions |
+
+> **Recommendation:** Start with `resnet18` (fast, low memory) or `efficientnet_b0` (best accuracy/size trade-off). Use `mobilenet_v2` on memory-constrained machines. Avoid `vgg16` unless you have a GPU — its 138 M parameters make CPU training impractically slow.
 
 ---
 
