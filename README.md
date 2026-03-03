@@ -18,6 +18,7 @@ A desktop image management application that uses machine learning to automatical
   - [Training a Model](#training-a-model)
   - [Auto-Sorting Images](#auto-sorting-images)
   - [Tag Management](#tag-management)
+  - [Searching by Tags](#searching-by-tags)
   - [Unsupervised Clustering](#unsupervised-clustering)
   - [Viewing Metrics](#viewing-metrics)
 - [Configuration](#configuration)
@@ -91,6 +92,7 @@ The application follows a clean **4-tier architecture**:
 | File Explorer | Windows-style UI with detailed and gallery (thumbnail grid) views |
 | Image Browsing | Navigate drives and directories with instant thumbnail rendering |
 | Tag Management | Add, remove, and inspect tags with confidence scores and source info |
+| Tag Search Bar | Persistent search bar in the main view; Boolean AND/OR search across the entire tagged image collection with live autocomplete |
 | Multi-Tag Search | Boolean AND/OR search across tagged image collections |
 
 ### Machine Learning
@@ -195,6 +197,25 @@ The application opens to `../ExampleImageFolder` by default. Change `default_ima
 **From manual tags**
 1. Select an image → add tags in the **Tag Management** sidebar.
 2. After tagging several images, go to **Machine Learning → Train from Tags**.
+
+### Searching by Tags
+
+A **Tag Search** bar is displayed below the navigation toolbar, always visible in the main window.
+
+1. **Type** one or more tag names in the search field.
+   - Separate multiple tags with **commas** (e.g. `HADES, VIDEO GAMES`).
+   - An **autocomplete popup** appears as you type each token, listing matching tag names from the database. Double-click (or press `Enter`) on a suggestion to insert it.
+2. **Choose a match mode** using the radio buttons to the right of the field:
+   - **AND** — results must contain *all* specified tags (default).
+   - **OR** — results contain *at least one* of the specified tags.
+3. Press **Search** or hit `Enter` to execute the search.
+   - Matching images are displayed in the current view (Detailed list or Gallery).
+   - The status bar and the label next to the search field show how many images were found.
+4. Press **✕ Clear** (or navigate to any folder) to exit search mode and return to the normal directory view.
+
+> **Note:** The search operates across the entire database — it is not limited to the currently open folder. Images whose files no longer exist on disk are silently skipped in the results.
+
+---
 
 ### Auto-Sorting Images
 

@@ -787,7 +787,10 @@ class FileExplorer:
         # Go button
         self.go_btn = ttk.Button(toolbar, text="Go", command=self.navigate_to_path)
         self.go_btn.pack(side=tk.LEFT, padx=2)
-        
+
+        # Tag search bar
+        self._build_search_bar()
+
         # Main container with left panel, content area, and right sidebar
         main_container = ttk.Frame(self.root)
         main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -1382,16 +1385,33 @@ class FileExplorer:
         """Switch to detailed view"""
         if self.view_mode != 'detailed':
             self.show_detailed_view()
-            self.load_directory(self.current_path)
-    
+            if getattr(self, '_search_active', False):
+                self._display_search_results(getattr(self, '_last_search_results', []))
+            else:
+                self.load_directory(self.current_path)
+
     def switch_to_icons(self):
         """Switch to icons view"""
         if self.view_mode != 'icons':
             self.show_icons_view()
-            self.load_directory(self.current_path)
+            if getattr(self, '_search_active', False):
+                self._display_search_results(getattr(self, '_last_search_results', []))
+            else:
+                self.load_directory(self.current_path)
         
     def load_directory(self, path):
         """Load and display directory contents"""
+        # Reset search mode when navigating to a folder
+        if getattr(self, '_search_active', False):
+            self._search_active = False
+            self._last_search_results = []
+            try:
+                self.search_clear_btn.config(state=tk.DISABLED)
+                self.search_status_label.config(
+                    text='Type tag(s) — separate with comma or space',
+                    foreground='gray')
+            except Exception:
+                pass
         try:
             path = Path(path)
             if not path.exists():
@@ -1449,7 +1469,214 @@ class FileExplorer:
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load directory: {e}")
-    
+
+    # ------------------------------------------------------------------
+    # Tag Search
+    # ------------------------------------------------------------------
+
+    def _build_search_bar(self):
+        """Build the tag-search bar displayed below the navigation toolbar."""
+        import re as _re
+        search_frame = ttk.Frame(self.root, relief='groove', borderwidth=1)
+        search_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 2))
+        self._search_bar_frame = search_frame
+
+        ttk.Label(search_frame, text='\U0001f50d Tag Search:',
+                  font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=(6, 3), pady=3)
+
+        # Entry for tag input
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=38,
+                                      font=('Arial', 10))
+        self.search_entry.pack(side=tk.LEFT, padx=2, pady=3)
+        self.search_entry.bind('<Return>', lambda e: self.perform_tag_search())
+        self.search_entry.bind('<Escape>', lambda e: self._hide_tag_suggestions())
+        self.search_var.trace_add('write', self._on_search_entry_change)
+
+        # AND / OR mode
+        self.search_mode_var = tk.StringVar(value='AND')
+        mode_frame = ttk.Frame(search_frame)
+        mode_frame.pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Radiobutton(mode_frame, text='AND', variable=self.search_mode_var,
+                        value='AND').pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_frame, text='OR', variable=self.search_mode_var,
+                        value='OR').pack(side=tk.LEFT, padx=(2, 0))
+
+        # Buttons
+        ttk.Button(search_frame, text='Search',
+                   command=self.perform_tag_search).pack(side=tk.LEFT, padx=3)
+        self.search_clear_btn = ttk.Button(search_frame, text='\u2715 Clear',
+                                           command=self.clear_search, state=tk.DISABLED)
+        self.search_clear_btn.pack(side=tk.LEFT, padx=2)
+
+        # Status / hint label
+        self.search_status_label = ttk.Label(
+            search_frame,
+            text='Type tag(s) \u2014 separate with commas',
+            foreground='gray', font=('Arial', 9))
+        self.search_status_label.pack(side=tk.LEFT, padx=(8, 4))
+
+        # Internal search state
+        self._search_active = False
+        self._last_search_results: list = []
+        self._suggest_popup: tk.Toplevel | None = None  # type: ignore[assignment]
+        self._suggest_listbox: tk.Listbox | None = None  # type: ignore[assignment]
+
+    def _on_search_entry_change(self, *_):
+        """Called whenever the search Entry text changes; updates suggestions."""
+        self._show_tag_suggestions(self.search_var.get())
+
+    def _show_tag_suggestions(self, query: str):
+        """Show a small popup with tag-name suggestions matching the current token."""
+        import re
+        # Determine the last partial token (after the last comma or leading space)
+        raw_tokens = re.split(r',', query)
+        current_token = raw_tokens[-1].strip() if raw_tokens else ''
+
+        if not current_token:
+            self._hide_tag_suggestions()
+            return
+
+        try:
+            all_tags = metadata_store.get_all_tags()
+            tag_names = [t['tag_name'] for t in all_tags]
+        except Exception:
+            tag_names = []
+
+        matches = [t for t in tag_names
+                   if current_token.lower() in t.lower()][:10]
+
+        if not matches:
+            self._hide_tag_suggestions()
+            return
+
+        # Position popup below the entry widget
+        self.search_entry.update_idletasks()
+        x = self.search_entry.winfo_rootx()
+        y = self.search_entry.winfo_rooty() + self.search_entry.winfo_height()
+
+        if self._suggest_popup is None or not self._suggest_popup.winfo_exists():
+            popup = tk.Toplevel(self.root)
+            popup.wm_overrideredirect(True)
+            popup.wm_geometry(f'+{x}+{y}')
+            lbox = tk.Listbox(popup, font=('Arial', 10),
+                              height=min(len(matches), 8),
+                              selectmode=tk.SINGLE, width=35,
+                              relief='solid', borderwidth=1)
+            lbox.pack(fill=tk.BOTH, expand=True)
+            lbox.bind('<Double-1>', self._on_suggestion_select)
+            lbox.bind('<Return>', self._on_suggestion_select)
+            self._suggest_popup = popup
+            self._suggest_listbox = lbox
+        else:
+            self._suggest_popup.wm_geometry(f'+{x}+{y}')
+            self._suggest_listbox.delete(0, tk.END)
+            self._suggest_popup.deiconify()
+
+        for m in matches:
+            self._suggest_listbox.insert(tk.END, m)
+
+    def _hide_tag_suggestions(self):
+        """Hide the suggestion popup."""
+        if self._suggest_popup and self._suggest_popup.winfo_exists():
+            self._suggest_popup.withdraw()
+
+    def _on_suggestion_select(self, event=None):
+        """Apply the selected suggestion into the search entry."""
+        import re
+        if self._suggest_listbox is None:
+            return
+        sel = self._suggest_listbox.curselection()
+        if not sel:
+            return
+        chosen = self._suggest_listbox.get(sel[0])
+        current = self.search_var.get()
+        # Replace the last token (after last comma) with the chosen tag
+        parts = [p.strip() for p in current.split(',')]
+        if parts:
+            parts[-1] = chosen
+        self.search_var.set(', '.join(parts))
+        self.search_entry.icursor(tk.END)
+        self._hide_tag_suggestions()
+        self.search_entry.focus_set()
+
+    def perform_tag_search(self):
+        """Execute a tag-based search across the whole DB and display results."""
+        import re
+        raw = self.search_var.get().strip()
+        if not raw:
+            self.clear_search()
+            return
+
+        # Parse comma-separated tags; fall back to whitespace splitting
+        tags = [t.strip() for t in raw.split(',') if t.strip()]
+        if not tags:
+            tags = raw.split()
+        if not tags:
+            return
+
+        match_all = (self.search_mode_var.get() == 'AND')
+        try:
+            results = metadata_store.search_images_by_tags(tags, match_all=match_all)
+        except Exception as exc:
+            messagebox.showerror('Search Error', f'Tag search failed:\n{exc}')
+            return
+
+        self._search_active = True
+        self._last_search_results = results
+        self.search_clear_btn.config(state=tk.NORMAL)
+
+        connector = ' AND ' if match_all else ' OR '
+        tag_str = connector.join(f'\u201c{t}\u201d' for t in tags)
+        self.search_status_label.config(
+            text=f'Results for {tag_str} \u2014 {len(results)} image(s) found',
+            foreground='#005a9e')
+        self.status_var.set(
+            f'Tag search: {len(results)} image(s) found  ('
+            + (', '.join(tags))
+            + f')  [{self.search_mode_var.get()} mode]')
+
+        self._display_search_results(results)
+        self._hide_tag_suggestions()
+
+    def _display_search_results(self, results: list):
+        """Render a flat list of image paths (search results) in the current view."""
+        files = []
+        for r in results:
+            p = Path(r['file_path'])
+            if p.exists() and p.is_file():
+                files.append(p)
+
+        # Reset scroll positions
+        try:
+            self.canvas.yview_moveto(0)
+        except Exception:
+            pass
+        try:
+            self.tree.yview_moveto(0)
+        except Exception:
+            pass
+
+        if self.view_mode == 'detailed':
+            self.load_detailed_view([], files)
+        else:
+            self.load_icons_view([], files)
+
+    def clear_search(self):
+        """Clear the search state and reload the current directory."""
+        self._search_active = False
+        self._last_search_results = []
+        self.search_var.set('')
+        try:
+            self.search_clear_btn.config(state=tk.DISABLED)
+            self.search_status_label.config(
+                text='Type tag(s) \u2014 separate with commas',
+                foreground='gray')
+        except Exception:
+            pass
+        self._hide_tag_suggestions()
+        self.load_directory(self.current_path)
+
     def get_file_type_from_extension(self, path):
         """Determine file type and appropriate icon from extension"""
         if path.is_dir():
