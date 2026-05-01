@@ -6,7 +6,7 @@ These parameters can be modified through the UI without changing code.
 
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 
 
@@ -81,6 +81,7 @@ class ApplicationConfig:
     use_gpu: bool = True
     num_workers: int = 4
     model_type: str = "resnet18"  # Options: resnet18, resnet34, resnet50, efficientnet_b0, efficientnet_b1, mobilenet_v2, vgg16
+    auto_load_model: bool = False  # If True, attempt to auto-load latest model at startup
     
     # Training mode
     supervised_mode: bool = True  # If False, uses unsupervised clustering
@@ -93,6 +94,10 @@ class ApplicationConfig:
     # Database settings
     db_root_folder: str = ""    # Root folder for the single shared database (empty = uses app ./data/ dir)
     
+    # Benchmarking — COCO dataset
+    coco_data_dir: str = ""    # local cache for annotations + images (empty = ./data/coco)
+    coco_max_images: int = 500  # how many val2017 images to use per benchmark run
+
     # Performance
     enable_metrics: bool = True
     log_level: str = "INFO"
@@ -109,6 +114,130 @@ class ApplicationConfig:
         if 'thumbnail_size' in data:
             data['thumbnail_size'] = tuple(data['thumbnail_size'])
         return cls(**data)
+
+
+@dataclass
+class TrainingProfile:
+    """Named snapshot of all training-relevant hyperparameters + architecture."""
+    name: str
+    model_type: str              = 'resnet18'
+    learning_rate: float         = 0.0001
+    batch_size: int              = 32
+    epochs: int                  = 20
+    dropout_rate: float          = 0.3
+    early_stopping_patience: int = 7
+    validation_split: float      = 0.15
+    confidence_threshold: float  = 0.35
+    max_suggestions: int         = 5
+    image_size: int              = 224
+    builtin: bool                = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TrainingProfile':
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+_BUILTIN_PROFILES: List[TrainingProfile] = [
+    TrainingProfile(
+        name='Fast', model_type='mobilenet_v2',
+        learning_rate=0.001, batch_size=32, epochs=5,
+        dropout_rate=0.3, early_stopping_patience=2,
+        validation_split=0.2, confidence_threshold=0.4,
+        builtin=True,
+    ),
+    TrainingProfile(
+        name='Balanced', model_type='efficientnet_b0',
+        learning_rate=0.0001, batch_size=16, epochs=20,
+        dropout_rate=0.3, early_stopping_patience=7,
+        validation_split=0.15, confidence_threshold=0.35,
+        builtin=True,
+    ),
+    TrainingProfile(
+        name='High Quality', model_type='resnet50',
+        learning_rate=0.0001, batch_size=16, epochs=30,
+        dropout_rate=0.25, early_stopping_patience=10,
+        validation_split=0.15, confidence_threshold=0.35,
+        builtin=True,
+    ),
+    TrainingProfile(
+        name='Paper — ResNet-18', model_type='resnet18',
+        learning_rate=0.0001, batch_size=16, epochs=25,
+        dropout_rate=0.35, early_stopping_patience=8,
+        validation_split=0.15, confidence_threshold=0.35,
+        builtin=True,
+    ),
+    TrainingProfile(
+        name='Paper — EfficientNet-B0', model_type='efficientnet_b0',
+        learning_rate=0.0001, batch_size=16, epochs=25,
+        dropout_rate=0.35, early_stopping_patience=8,
+        validation_split=0.15, confidence_threshold=0.35,
+        builtin=True,
+    ),
+]
+
+
+class ProfileManager:
+    """Manages named training profiles: built-ins (read-only) + user-created."""
+
+    def __init__(self, profiles_path: str = './profiles.json') -> None:
+        self._path = Path(profiles_path)
+        # Ordered: built-ins first, then user profiles
+        self._profiles: Dict[str, TrainingProfile] = {
+            p.name: p for p in _BUILTIN_PROFILES
+        }
+        self._load_user()
+
+    def _load_user(self) -> None:
+        if not self._path.exists():
+            return
+        try:
+            with open(self._path, 'r') as f:
+                data = json.load(f)
+            for entry in data.get('profiles', []):
+                try:
+                    p = TrainingProfile.from_dict(entry)
+                    p.builtin = False
+                    self._profiles[p.name] = p
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f'Could not load profiles: {e}')
+
+    def _persist(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            user = [p.to_dict() for p in self._profiles.values() if not p.builtin]
+            with open(self._path, 'w') as f:
+                json.dump({'profiles': user}, f, indent=2)
+        except Exception as e:
+            print(f'Could not save profiles: {e}')
+
+    def list_names(self) -> List[str]:
+        return list(self._profiles.keys())
+
+    def get(self, name: str) -> Optional[TrainingProfile]:
+        return self._profiles.get(name)
+
+    def save(self, profile: TrainingProfile) -> None:
+        profile.builtin = False
+        self._profiles[profile.name] = profile
+        self._persist()
+
+    def delete(self, name: str) -> bool:
+        p = self._profiles.get(name)
+        if p is None or p.builtin:
+            return False
+        del self._profiles[name]
+        self._persist()
+        return True
+
+    def is_builtin(self, name: str) -> bool:
+        p = self._profiles.get(name)
+        return p is not None and p.builtin
 
 
 class ConfigManager:
@@ -180,3 +309,6 @@ class ConfigManager:
 
 # Global configuration instance
 config_manager = ConfigManager()
+
+# Global profile manager instance
+profile_manager = ProfileManager()

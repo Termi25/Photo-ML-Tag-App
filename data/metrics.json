@@ -1,0 +1,162 @@
+[
+  {
+    "session_id": "20260429_200705",
+    "start_time": 1777482425.4977078,
+    "inference_metrics": {
+      "latencies": [
+        8.69713568687439
+      ],
+      "batch_sizes": [
+        500
+      ],
+      "total_images_processed": 500,
+      "avg_latency_per_image": 0.017394271373748778
+    },
+    "training_metrics": {
+      "convergence_times": [
+        87.0322573184967
+      ],
+      "epochs_to_converge": [
+        6
+      ],
+      "final_accuracies": [
+        67.6375
+      ],
+      "total_training_time": 87.0322573184967
+    },
+    "accuracy_metrics": {
+      "predictions_vs_ground_truth": [],
+      "per_tag_accuracy": {},
+      "overall_accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0
+    },
+    "preprocessing_metrics": {
+      "avg_preprocessing_time": 0.0,
+      "total_images_preprocessed": 0
+    },
+    "end_time": 1777482528.7564266,
+    "total_duration": 103.25871872901917
+  },
+  {
+    "session_id": "20260429_222225",
+    "start_time": 1777490545.6966436,
+    "inference_metrics": {
+      "latencies": [
+        8.13221526145935
+      ],
+      "batch_sizes": [
+        500
+      ],
+      "total_images_processed": 500,
+      "avg_latency_per_image": 0.0162644305229187
+    },
+    "training_metrics": {
+      "convergence_times": [
+        71.56325483322144
+      ],
+      "epochs_to_converge": [
+        5
+      ],
+      "final_accuracies": [
+        67.875
+      ],
+      "total_training_time": 71.56325483322144
+    },
+    "accuracy_metrics": {
+      "predictions_vs_ground_truth": [],
+      "per_tag_accuracy": {},
+      "overall_accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0
+    },
+    "preprocessing_metrics": {
+      "avg_preprocessing_time": 0.0,
+      "total_images_preprocessed": 0
+    },
+    "end_time": 1777490629.8008623,
+    "total_duration": 84.10421872138977
+  },
+  {
+    "session_id": "20260430_151319",
+    "start_time": 1777551199.7012863,
+    "inference_metrics": {
+      "latencies": [
+        86.61515784263611
+      ],
+      "batch_sizes": [
+        3500
+      ],
+      "total_images_processed": 3500,
+      "avg_latency_per_image": 0.02474718795503889
+    },
+    "training_metrics": {
+      "convergence_times": [
+        1431.558909893036
+      ],
+      "epochs_to_converge": [
+        10
+      ],
+      "final_accuracies": [
+        65.31190476190476
+      ],
+      "total_training_time": 1431.558909893036
+    },
+    "accuracy_metrics": {
+      "predictions_vs_ground_truth": [],
+      "per_tag_accuracy": {},
+      "overall_accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0
+    },
+    "preprocessing_metrics": {
+      "avg_preprocessing_time": 0.0,
+      "total_images_preprocessed": 0
+    },
+    "end_time": 1777555028.5779085,
+    "total_duration": 3828.876622200012
+  },
+  {
+    "session_id": "20260430_163729",
+    "start_time": 1777556249.6198409,
+    "inference_metrics": {
+      "latencies": [
+        74.92777609825134
+      ],
+      "batch_sizes": [
+        3500
+      ],
+      "total_images_processed": 3500,
+      "avg_latency_per_image": 0.02140793602807181
+    },
+    "training_metrics": {
+      "convergence_times": [
+        1182.402180671692
+      ],
+      "epochs_to_converge": [
+        9
+      ],
+      "final_accuracies": [
+        54.378571428571426
+      ],
+      "total_training_time": 1182.402180671692
+    },
+    "accuracy_metrics": {
+      "predictions_vs_ground_truth": [],
+      "per_tag_accuracy": {},
+      "overall_accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0
+    },
+    "preprocessing_metrics": {
+      "avg_preprocessing_time": 0.0,
+      "total_images_preprocessed": 0
+    },
+    "end_time": 1777557550.7322085,
+    "total_duration": 1301.1123676300049
+  }
+]

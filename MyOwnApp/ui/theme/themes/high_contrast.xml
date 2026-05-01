@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  High-Contrast theme — WCAG AA-compliant.
+  Uses pure black/white surfaces with vivid accent for maximum legibility.
+-->
+<theme name="High Contrast" version="1.0" author="App">
+
+  <meta>
+    <description>High-contrast accessibility theme (WCAG AA compliant)</description>
+    <base_ttk_theme>clam</base_ttk_theme>
+  </meta>
+
+  <colors>
+    <!-- Accent -->
+    <accent>#ffff00</accent>
+    <accent_hover>#e6e600</accent_hover>
+    <accent_pressed>#cccc00</accent_pressed>
+    <accent_light>#333300</accent_light>
+
+    <!-- Surfaces -->
+    <background>#000000</background>
+    <card>#0a0a0a</card>
+    <sidebar>#000000</sidebar>
+    <sidebar_fg>#ffffff</sidebar_fg>
+
+    <!-- Text -->
+    <foreground>#ffffff</foreground>
+    <foreground_dim>#c0c0c0</foreground_dim>
+    <foreground_disabled>#808080</foreground_disabled>
+
+    <!-- Interactive -->
+    <hover>#1a1a1a</hover>
+    <pressed>#2a2a2a</pressed>
+    <border>#ffffff</border>
+    <focus_ring>#ffff00</focus_ring>
+
+    <!-- Selection -->
+    <selection_bg>#0078d4</selection_bg>
+    <selection_fg>#ffffff</selection_fg>
+
+    <!-- Status colours -->
+    <success>#00ff00</success>
+    <warning>#ffcc00</warning>
+    <error>#ff4444</error>
+
+    <!-- Component-specific -->
+    <trough>#1a1a1a</trough>
+    <progressbar>#ffff00</progressbar>
+    <treeview_heading_bg>#1a1a1a</treeview_heading_bg>
+    <treeview_row_alt>#050505</treeview_row_alt>
+    <status_bar_bg>#0078d4</status_bar_bg>
+    <tooltip_bg>#1a1a1a</tooltip_bg>
+    <tooltip_fg>#ffffff</tooltip_fg>
+
+    <!-- Search chips -->
+    <chip_include>#005500</chip_include>
+    <chip_exclude>#550000</chip_exclude>
+    <chip_include_fg>#00ff00</chip_include_fg>
+    <chip_exclude_fg>#ff6666</chip_exclude_fg>
+  </colors>
+
+  <fonts>
+    <font name="default"  family="Segoe UI" size="11"/>
+    <font name="bold"     family="Segoe UI" size="11" weight="bold"/>
+    <font name="heading"  family="Segoe UI" size="13" weight="bold"/>
+    <font name="small"    family="Segoe UI" size="10"/>
+    <font name="mono"     family="Consolas" size="10"/>
+    <font name="large"    family="Segoe UI" size="14" weight="bold"/>
+    <font name="ml_label" family="Segoe UI" size="13" weight="bold"/>
+    <font name="ml_body"  family="Segoe UI" size="12"/>
+    <font name="advanced" family="Segoe UI" size="12"/>
+  </fonts>
+
+  <layout>
+    <row_height>28</row_height>
+    <button_padding_x>10</button_padding_x>
+    <button_padding_y>5</button_padding_y>
+    <border_width>2</border_width>
+    <corner_radius>2</corner_radius>
+  </layout>
+
+</theme>

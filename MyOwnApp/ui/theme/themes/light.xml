@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Light theme — Windows 11-inspired.
+  All hex colours are 6-digit RGB without alpha.
+-->
+<theme name="Light" version="1.0" author="App">
+
+  <meta>
+    <description>Clean light theme inspired by Windows 11 Fluent Design</description>
+    <base_ttk_theme>clam</base_ttk_theme>
+  </meta>
+
+  <colors>
+    <!-- Accent -->
+    <accent>#0078d4</accent>
+    <accent_hover>#106ebe</accent_hover>
+    <accent_pressed>#005a9e</accent_pressed>
+    <accent_light>#cce4f7</accent_light>
+
+    <!-- Surfaces -->
+    <background>#f3f3f3</background>
+    <card>#ffffff</card>
+    <sidebar>#f0f0f0</sidebar>
+    <sidebar_fg>#1a1a1a</sidebar_fg>
+
+    <!-- Text -->
+    <foreground>#1a1a1a</foreground>
+    <foreground_dim>#555555</foreground_dim>
+    <foreground_disabled>#a0a0a0</foreground_disabled>
+
+    <!-- Interactive -->
+    <hover>#e5e5e5</hover>
+    <pressed>#d0d0d0</pressed>
+    <border>#d0d0d0</border>
+    <focus_ring>#0078d4</focus_ring>
+
+    <!-- Selection -->
+    <selection_bg>#0078d4</selection_bg>
+    <selection_fg>#ffffff</selection_fg>
+
+    <!-- Status colours -->
+    <success>#2e7d32</success>
+    <warning>#f57c00</warning>
+    <error>#c62828</error>
+
+    <!-- Component-specific -->
+    <trough>#e0e0e0</trough>
+    <progressbar>#0078d4</progressbar>
+    <treeview_heading_bg>#e8e8e8</treeview_heading_bg>
+    <treeview_row_alt>#f8f8f8</treeview_row_alt>
+    <status_bar_bg>#e0e0e0</status_bar_bg>
+    <tooltip_bg>#ffffcc</tooltip_bg>
+    <tooltip_fg>#1a1a1a</tooltip_fg>
+
+    <!-- Search chips -->
+    <chip_include>#2e7d32</chip_include>
+    <chip_exclude>#c62828</chip_exclude>
+    <chip_include_fg>#ffffff</chip_include_fg>
+    <chip_exclude_fg>#ffffff</chip_exclude_fg>
+  </colors>
+
+  <fonts>
+    <font name="default"  family="Segoe UI" size="10"/>
+    <font name="bold"     family="Segoe UI" size="10" weight="bold"/>
+    <font name="heading"  family="Segoe UI" size="12" weight="bold"/>
+    <font name="small"    family="Segoe UI" size="9"/>
+    <font name="mono"     family="Consolas" size="9"/>
+    <font name="large"    family="Segoe UI" size="13" weight="bold"/>
+    <font name="ml_label" family="Segoe UI" size="12" weight="bold"/>
+    <font name="ml_body"  family="Segoe UI" size="11"/>
+    <font name="advanced" family="Segoe UI" size="11"/>
+  </fonts>
+
+  <layout>
+    <row_height>24</row_height>
+    <button_padding_x>8</button_padding_x>
+    <button_padding_y>4</button_padding_y>
+    <border_width>1</border_width>
+    <corner_radius>4</corner_radius>
+  </layout>
+
+</theme>

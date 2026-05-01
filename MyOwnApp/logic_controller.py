@@ -1,9 +1,3 @@
-"""
-Logic Controller
-Orchestration layer that coordinates File Watcher, Tagging Engine, and Training Manager.
-Acts as the bridge between UI and ML Module.
-"""
-
 import os
 import re
 import threading
@@ -22,7 +16,6 @@ from ml_module import InferenceEngine, TrainingLoop, UnsupervisedClustering, Ima
 
 
 class FileWatcher:
-    """Monitors directories for image files and tracks changes"""
     
     def __init__(self):
         self.observer = None
@@ -31,7 +24,6 @@ class FileWatcher:
         self.on_new_images_callback = None
     
     def scan_directory(self, directory: str, recursive: bool = True) -> List[str]:
-        """Scan directory for image files"""
         image_files = []
         dir_path = Path(directory)
         
@@ -41,8 +33,11 @@ class FileWatcher:
         
         if recursive:
             for file_path in dir_path.rglob('*'):
-                if file_path.is_file() and file_path.suffix.lower() in self.image_extensions:
-                    image_files.append(str(file_path))
+                if not (file_path.is_file() and file_path.suffix.lower() in self.image_extensions):
+                    continue
+                if any(part.lower() == 'thumbs' for part in file_path.relative_to(dir_path).parts[:-1]):
+                    continue
+                image_files.append(str(file_path))
         else:
             for file_path in dir_path.iterdir():
                 if file_path.is_file() and file_path.suffix.lower() in self.image_extensions:
@@ -52,22 +47,27 @@ class FileWatcher:
         return image_files
     
     def register_images_to_database(self, image_paths: List[str]):
-        """Register discovered images in the database"""
-        for img_path in image_paths:
-            path_obj = Path(img_path)
-            file_size = path_obj.stat().st_size if path_obj.exists() else 0
-            
-            # Add to database if not already present
-            image_id = metadata_store.add_image(
-                file_path=str(img_path),
-                file_name=path_obj.name,
-                file_size=file_size
-            )
-        
+        if not image_paths:
+            return
+        try:
+            metadata_store.connection.execute("BEGIN")
+            for img_path in image_paths:
+                path_obj = Path(img_path)
+                file_size = path_obj.stat().st_size if path_obj.exists() else 0
+                metadata_store.add_image(
+                    file_path=str(img_path),
+                    file_name=path_obj.name,
+                    file_size=file_size,
+                    commit=False,
+                )
+            metadata_store.connection.commit()
+        except Exception:
+            metadata_store.connection.rollback()
+            raise
+
         print(f"Registered {len(image_paths)} images to database")
     
     def watch_directory(self, directory: str, callback: Callable | None = None):
-        """Start watching a directory for changes"""
         if self.observer is not None:
             self.stop_watching()
         
@@ -82,17 +82,25 @@ class FileWatcher:
         print(f"Watching directory: {directory}")
     
     def stop_watching(self):
-        """Stop watching directories"""
         if self.observer is not None:
             self.observer.stop()
-            self.observer.join()
+            # Avoid indefinite blocking if the observer thread is stuck.
+            try:
+                self.observer.join(timeout=2)
+            except TypeError:
+                # Older watchdog versions may not support timeout.
+                self.observer.join()
+            try:
+                if hasattr(self.observer, 'is_alive') and self.observer.is_alive():
+                    print("⚠ Watcher did not stop within timeout")
+            except Exception:
+                pass
             self.observer = None
             self.watched_paths.clear()
             print("Stopped watching directories")
 
 
 class ImageFileEventHandler(FileSystemEventHandler):
-    """Handle file system events for image files"""
     
     def __init__(self, image_extensions: set, callback: Callable | None = None):
         self.image_extensions = image_extensions
@@ -108,30 +116,56 @@ class ImageFileEventHandler(FileSystemEventHandler):
 
 
 class TaggingEngine:
-    """Manages image tag operations and predictions"""
     
     def __init__(self):
         self.inference_engine = InferenceEngine()
         self.model_loaded = False
     
     def load_model(self, model_name: str = 'latest') -> bool:
-        """Load inference model"""
         self.model_loaded = self.inference_engine.load_model(model_name)
         return self.model_loaded
     
     def predict_tags_for_image(self, image_path: str) -> List[Dict[str, Any]]:
-        """Predict tags for a single image"""
         if not self.model_loaded:
             print("No model loaded for inference")
             return []
         
         predictions = self.inference_engine.predict_single(image_path)
         return predictions
+
+    def get_image_tags(self, image_path: str) -> List[Dict[str, Any]]:
+        """Return stored tags for an image by querying the metadata store."""
+        try:
+            rec = metadata_store.get_image_by_path(image_path)
+            if rec is None:
+                return []
+            return metadata_store.get_image_tags(rec['id'])
+        except Exception:
+            return []
+
+    def get_all_available_tags(self) -> List[str]:
+        """Return a list of tag names available in the DB."""
+        try:
+            return [t['tag_name'] for t in metadata_store.get_all_tags()]
+        except Exception:
+            return []
+
+    def apply_folder_tags_to_image(self, image_path: str, root_folder: str | None = None) -> List[str]:
+        """(Minimal) derive tags from containing folder names. Returns applied tags list."""
+        try:
+            p = Path(image_path)
+            parents = list(p.parents)
+            applied = []
+            for parent in parents:
+                if root_folder and str(parent).startswith(str(Path(root_folder).resolve())):
+                    applied.append(parent.name)
+            return applied
+        except Exception:
+            return []
     
     def predict_tags_batch(self, image_paths: List[str], progress_callback: Callable | None = None) -> Dict[str, List[Dict[str, Any]]]:
-        """Predict tags for multiple images with progress feedback"""
         if not self.model_loaded:
-            print("⚠ No model loaded for inference")
+            print("No model loaded for inference")
             if progress_callback:
                 progress_callback('error', 'No model loaded')
             return {path: [] for path in image_paths}
@@ -149,14 +183,13 @@ class TaggingEngine:
         
         print(f"Batch prediction complete: {images_with_tags}/{len(image_paths)} images tagged with {total_predictions} total predictions")
         if progress_callback:
-            progress_callback('detail', f'✓ Tagged {images_with_tags}/{len(image_paths)} images ({total_predictions} predictions)')
+            progress_callback('detail', f'Tagged {images_with_tags}/{len(image_paths)} images ({total_predictions} predictions)')
         
         return predictions_dict
     
     def apply_predicted_tags(self, image_path: str, predictions: List[Dict[str, Any]]):  
-        """Apply predicted tags to image in database and file metadata"""
         if not predictions:
-            print(f"⚠ No predictions to apply for {Path(image_path).name}")
+            print(f"No predictions to apply for {Path(image_path).name}")
             return
         
         # Get or create image record
@@ -191,10 +224,9 @@ class TaggingEngine:
         self.write_tags_to_file(image_path, tag_names)
         
         file_name = Path(image_path).name
-        print(f"✓ Tagged {file_name}: {', '.join(tags_added)}")
+        print(f"Tagged {file_name}: {', '.join(tags_added)}")
     
     def write_tags_to_file(self, image_path: str, tags: List[str], silent: bool = False):
-        """Write tags to image file metadata (EXIF/IPTC keywords)"""
         if not tags or not os.path.exists(image_path):
             return
         
@@ -217,7 +249,6 @@ class TaggingEngine:
                 print(f"Failed to write tags to {image_path}: {e}")
     
     def _write_tags_to_jpeg(self, image_path: str, tags: List[str], silent: bool = False):
-        """Write tags to JPEG file using EXIF"""
         try:
             # Load existing EXIF data
             try:
@@ -256,7 +287,6 @@ class TaggingEngine:
                 print(f"Failed to write JPEG EXIF tags: {e}")
     
     def _write_tags_to_png(self, image_path: str, tags: List[str], silent: bool = False):
-        """Write tags to PNG file using PNG text chunks"""
         try:
             from PIL import PngImagePlugin
             
@@ -274,14 +304,13 @@ class TaggingEngine:
             img.save(image_path, pnginfo=metadata)
             
             if not silent:
-                print(f"✓ Wrote {len(tags)} tags to {Path(image_path).name}")
+                print(f"Wrote {len(tags)} tags to {Path(image_path).name}")
         
         except Exception as e:
             if not silent:
                 print(f"Failed to write PNG tags: {e}")
     
     def apply_manual_tag(self, image_path: str, tag_name: str, is_ground_truth: bool = False):
-        """Manually add a tag to an image"""
         # Get or create image record
         image_record = metadata_store.get_image_by_path(image_path)
         if image_record is None:
@@ -314,7 +343,6 @@ class TaggingEngine:
         self.write_tags_to_file(image_path, tag_names)
     
     def remove_tag(self, image_path: str, tag_name: str):
-        """Remove a tag from an image"""
         image_record = metadata_store.get_image_by_path(image_path)
         if image_record is None:
             print(f"Image not found: {image_path}")
@@ -334,116 +362,52 @@ class TaggingEngine:
             tag_names = [tag['tag_name'] for tag in remaining_tags]
             self.write_tags_to_file(image_path, tag_names)
     
-    def get_image_tags(self, image_path: str) -> List[Dict[str, Any]]:
-        """Get all tags for an image"""
-        image_record = metadata_store.get_image_by_path(image_path)
-        if image_record is None:
-            print(f"⚠ Image not found in database: {image_path}")
-            return []
-        
-        tags = metadata_store.get_image_tags(image_record['id'])
-        print(f"✓ Found {len(tags)} tags for image ID {image_record['id']}: {image_path}")
-        return tags
-    
-    def get_all_available_tags(self) -> List[str]:
-        """Get all available tags in the system"""
-        tags = metadata_store.get_all_tags()
-        return [tag['tag_name'] for tag in tags]
 
-    # ------------------------------------------------------------------
-    # Folder-path based tag extraction
-    # ------------------------------------------------------------------
-
-    def get_folder_tags_for_image(self, image_path: str, root_folder: str) -> List[str]:
-        """Derive tags from the folder hierarchy between *root_folder* and *image_path*.
-
-        Each folder name between the root and the file is split on whitespace /
-        underscores / hyphens so that multi-word folder names produce multiple tags.
-
-        Example:
-            root  = /photos
-            image = /photos/ANIME/BOKU NO HERO ACADEMIA/img.jpg
-            tags  = ['ANIME', 'BOKU', 'NO', 'HERO', 'ACADEMIA']
-        """
-        tags: List[str] = []
-        try:
-            image_p = Path(image_path).resolve()
-            root_p  = Path(root_folder).resolve()
-            rel = image_p.relative_to(root_p)
-            # rel.parts[-1] is the filename — skip it
-            for folder_name in rel.parts[:-1]:
-                # Split on spaces, underscores, hyphens — keep non-empty tokens
-                words = [w.strip() for w in re.split(r'[\s_\-]+', folder_name) if w.strip()]
-                tags.extend(words)
-        except ValueError:
-            # image not under root_folder — return empty
-            pass
-        return tags
-
-    def apply_folder_tags_to_image(self, image_path: str, root_folder: str | None = None) -> List[str]:
-        """Apply folder-derived tags to *image_path* in the database.
-
-        Returns the list of tag names that were applied.
-        """
-        if root_folder is None:
-            root_folder = config_manager.app_config.tag_root_folder
-            if not root_folder:
-                root_folder = config_manager.app_config.default_image_folder
-
-        tags = self.get_folder_tags_for_image(image_path, root_folder)
-        for tag in tags:
-            self.apply_manual_tag(image_path, tag, is_ground_truth=False)
-
-        if tags:
-            print(f"✓ Folder tags applied to {Path(image_path).name}: {tags}")
-        else:
-            print(f"⚠ No folder tags derived for {Path(image_path).name} (not under root {root_folder}?)")
-        return tags
 
 
 class TrainingManager:
-    """Manages training queue and dispatches training tasks"""
-    
     def __init__(self):
         self.training_queue = queue.Queue()
         self.training_thread = None
         self.is_training = False
+        self._state_lock = threading.Lock()
+        self._cancel_event = threading.Event()
         self.training_loop = TrainingLoop()
         self.current_task = None
         self.on_training_complete_callback = None
         self.progress_callback: Callable[[str, Any], None] | None = None
-    
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
     def queue_training_task(self, task_type: str, **kwargs):
-        """Add a training task to the queue"""
-        task = {
-            'type': task_type,
-            'params': kwargs,
-            'queued_at': time.time()
-        }
+        task = {'type': task_type, 'params': kwargs, 'queued_at': time.time()}
         self.training_queue.put(task)
         print(f"Training task queued: {task_type}")
-        
-        # Start processing if not already running
-        if not self.is_training:
+        with self._state_lock:
+            should_start = not self.is_training and not (
+                self.training_thread is not None and self.training_thread.is_alive()
+            )
+        if should_start:
             self.start_processing()
-    
+
     def start_processing(self):
-        """Start processing training queue"""
-        if self.training_thread is not None and self.training_thread.is_alive():
-            return
-        
-        self.training_thread = threading.Thread(target=self._process_queue, daemon=True)
-        self.training_thread.start()
-    
-    def _process_queue(self):
-        """Process training tasks from queue"""
-        while not self.training_queue.empty():
+        with self._state_lock:
+            if self.training_thread is not None and self.training_thread.is_alive():
+                return
             self.is_training = True
-            task = self.training_queue.get()
+            self.training_thread = threading.Thread(target=self._process_queue, daemon=True)
+            self.training_thread.start()
+
+    def _process_queue(self):
+        self._cancel_event.clear()
+        while True:
+            try:
+                task = self.training_queue.get_nowait()
+            except queue.Empty:
+                break
             self.current_task = task
-            
             print(f"Processing training task: {task['type']}")
-            
             try:
                 if task['type'] == 'train_from_database':
                     self._train_from_database(task['params'])
@@ -461,143 +425,116 @@ class TrainingManager:
                 print(traceback.format_exc())
                 if self.progress_callback:
                     self.progress_callback('error', str(e))
-            
             self.training_queue.task_done()
-        
-        self.is_training = False
+
+        with self._state_lock:
+            self.is_training = False
         self.current_task = None
-        
-        # Notify completion
         if self.on_training_complete_callback:
             self.on_training_complete_callback()
-    
+
     def _train_from_database(self, params: Dict[str, Any]):
-        """Train model using tags from database"""
-        print("Training from database tags...")
         if self.progress_callback:
             self.progress_callback('status', 'Loading training data from database...')
-        
+
         image_paths, labels = self.training_loop.prepare_data_from_database(
             progress_callback=self.progress_callback)
-        
-        if len(image_paths) > 0:
-            if self.progress_callback:
-                metrics = self.training_loop.train(image_paths, labels, progress_callback=self.progress_callback)
-            else:
-                metrics = self.training_loop.train(image_paths, labels)
-            val_accs = metrics.get('val_accuracies', metrics.get('accuracies', [0]))
-            print(f"Training completed. Final validation accuracy: {val_accs[-1]:.2f}%")
-            
-            # Auto-load the newly trained model
-            print("Loading newly trained model...")
-            if self.progress_callback:
-                self.progress_callback('status', 'Loading trained model...')
-            self._auto_load_model()
-        else:
+
+        if not image_paths:
             if self.progress_callback:
                 self.progress_callback('error', 'No training data available in database')
-            print("No training data available in database")
-    
+            return
+
+        metrics = self.training_loop.train(
+            image_paths, labels,
+            progress_callback=self.progress_callback,
+            cancel_event=self._cancel_event,
+        )
+        if metrics.get('cancelled'):
+            return
+
+        val_accs = metrics.get('val_accuracies') or metrics.get('accuracies') or []
+        if val_accs:
+            print(f"Training completed. Final val accuracy: {val_accs[-1]:.2f}%")
+        if self.progress_callback:
+            self.progress_callback('status', 'Loading trained model...')
+        self._auto_load_model()
+        if self.progress_callback:
+            self.progress_callback('complete', True)
+
     def _train_from_folders(self, params: Dict[str, Any]):
-        """Bootstrap training from folder structure"""
         root_folder = params.get('root_folder', config_manager.app_config.default_image_folder)
-        print(f"Bootstrapping training from folder structure: {root_folder}")
-        
         if self.progress_callback:
             self.progress_callback('status', 'Scanning folders for training data...')
             self.progress_callback('detail', f'Root folder: {root_folder}')
-        
+
         image_paths, labels = self.training_loop.prepare_data_from_folders(
             root_folder, progress_callback=self.progress_callback)
-        
-        if len(image_paths) > 0:
-            if self.progress_callback:
-                metrics = self.training_loop.train(image_paths, labels, progress_callback=self.progress_callback)
-            else:
-                metrics = self.training_loop.train(image_paths, labels)
-            # Get final validation accuracy
-            val_accs = metrics.get('val_accuracies', [])
-            if val_accs:
-                print(f"Training completed. Final validation accuracy: {val_accs[-1]:.2f}%")
-            else:
-                print("Training completed.")
-            
-            # Auto-load the newly trained model
-            print("Loading newly trained model...")
-            if self.progress_callback:
-                self.progress_callback('status', 'Loading trained model...')
-            self._auto_load_model()
-        else:
+
+        if not image_paths:
             if self.progress_callback:
                 self.progress_callback('error', 'No images found in folder structure')
-            print("No images found in folder structure")
-    
+            return
+
+        metrics = self.training_loop.train(
+            image_paths, labels,
+            progress_callback=self.progress_callback,
+            cancel_event=self._cancel_event,
+        )
+        if metrics.get('cancelled'):
+            return
+
+        val_accs = metrics.get('val_accuracies', [])
+        if val_accs:
+            print(f"Training completed. Final val accuracy: {val_accs[-1]:.2f}%")
+        if self.progress_callback:
+            self.progress_callback('status', 'Loading trained model...')
+        self._auto_load_model()
+        if self.progress_callback:
+            self.progress_callback('complete', True)
+
     def _fine_tune(self, params: Dict[str, Any]):
-        """Fine-tune existing model with corrections"""
-        print("Fine-tuning model with user corrections...")
-        # Similar to train_from_database but loads existing model first
         self._train_from_database(params)
 
     def _fine_tune_inbox(self, params: Dict[str, Any]):
-        """Fine-tune model on a small set of user-labeled inbox images."""
         annotations: Dict[str, List[str]] = params.get('annotations', {})
         epochs: int = int(params.get('epochs', 5))
-
         if not annotations:
-            print('No annotations provided for inbox fine-tuning')
             return
-
-        print(f'Fine-tuning model on {len(annotations)} inbox image(s), {epochs} epoch(s)…')
-
-        # Use print-only mode (no UI callback) for inline fine-tune so that a
-        # stale TrainingProgressDialog callback from a previous training session
-        # never tries to update already-destroyed Tkinter widgets.
         try:
             metrics = self.training_loop.fine_tune_from_annotations(
-                annotations=annotations,
-                epochs=epochs,
-                progress_callback=None,
-            )
+                annotations=annotations, epochs=epochs,
+                progress_callback=self.progress_callback)
             if metrics:
                 losses = metrics.get('losses', [])
-                last_loss = losses[-1] if losses else float('nan')
-                print(f'Fine-tuning complete — final loss: {last_loss:.4f}')
+                print(f'Fine-tuning complete — final loss: {losses[-1]:.4f}' if losses else 'Fine-tuning complete')
                 self._auto_load_model()
+            if self.progress_callback:
+                self.progress_callback('complete', True)
         except Exception as exc:
             import traceback
             print(f'Fine-tuning error: {exc}')
             print(traceback.format_exc())
+            if self.progress_callback:
+                self.progress_callback('error', str(exc))
 
     def _unsupervised_clustering(self, params: Dict[str, Any]):
-        """Perform unsupervised clustering"""
         root_folder = params.get('root_folder', config_manager.app_config.default_image_folder)
         n_clusters = params.get('n_clusters', 10)
-        
-        print(f"Performing unsupervised clustering with {n_clusters} clusters...")
-        
-        # Get images
         file_watcher = FileWatcher()
         image_paths = file_watcher.scan_directory(root_folder, recursive=True)
-        
         if len(image_paths) > 0:
             clustering = UnsupervisedClustering(n_clusters=n_clusters)
             clusters = clustering.cluster_images(image_paths)
-            
-            # Apply cluster labels as tags
             for cluster_id, images in clusters.items():
                 tag_name = f"cluster_{cluster_id}"
                 tag_id = metadata_store.get_or_create_tag(tag_name, category='unsupervised')
-                
                 for img_path in images:
                     image_record = metadata_store.get_image_by_path(img_path)
                     if image_record:
                         metadata_store.add_image_tag(
-                            image_id=image_record['id'],
-                            tag_id=tag_id,
-                            confidence=1.0,
-                            source='clustering'
-                        )
-            
+                            image_id=image_record['id'], tag_id=tag_id,
+                            confidence=1.0, source='clustering')
             print(f"Clustering completed. Created {len(clusters)} clusters")
     
     def get_training_status(self) -> Dict[str, Any]:
@@ -610,28 +547,24 @@ class TrainingManager:
         }
     
     def _auto_load_model(self):
-        """Auto-load the latest trained model into the tagging engine"""
+        if not config_manager.app_config.auto_load_model:
+            return
         try:
-            # Access the parent logic controller's tagging engine
-            from logic_controller import logic_controller
-            success = logic_controller.tagging_engine.load_model('latest')
-            if success:
-                print("✓ Model loaded successfully and ready for inference")
-                if self.progress_callback:
-                    self.progress_callback('detail', '✓ Model loaded and ready for inference')
-            else:
-                print("⚠ Failed to load model after training")
-                if self.progress_callback:
-                    self.progress_callback('detail', '⚠ Model saved but failed to load')
+            # Avoid importing this module from itself (can stall under the
+            # import lock in rare cases); use the already-created global.
+            controller = globals().get('logic_controller')
+            if controller is None:
+                return
+            success = controller.tagging_engine.load_model('latest')
+            if self.progress_callback:
+                msg = '✓ Model loaded and ready for inference' if success else '⚠ Model saved but failed to load'
+                self.progress_callback('detail', msg)
         except Exception as e:
-            print(f"⚠ Error loading model after training: {e}")
             if self.progress_callback:
                 self.progress_callback('detail', f'⚠ Error loading model: {e}')
-    
+
     def cancel_training(self):
-        """Cancel current training (not fully implemented)"""
-        # This would require more sophisticated thread management
-        print("Training cancellation requested (not fully implemented)")
+        self.cancel()
 
 
 class LogicController:
@@ -656,8 +589,8 @@ class LogicController:
         
         print(f"Controller initialized with directory: {image_folder}")
         
-        # Try to auto-load the latest model if it exists
-        self.try_auto_load_model()
+        # Do not auto-load model on initialize; make loading user-triggered.
+        # Call `try_auto_load_model()` manually when needed (e.g., via UI).
     
     def change_directory(self, new_folder: str):
         """Change to a new directory (lightweight - doesn't scan)"""
@@ -793,6 +726,9 @@ class LogicController:
     
     def try_auto_load_model(self):
         """Try to auto-load the latest model if it exists"""
+        if not config_manager.app_config.auto_load_model:
+            print("Auto-load disabled by configuration; skipping auto-load attempt.")
+            return False
         try:
             # Check if a model file exists using model_storage
             if model_storage.model_exists('latest'):
@@ -810,6 +746,10 @@ class LogicController:
     def get_image_tags(self, image_path: str) -> List[Dict[str, Any]]:
         """Get all tags for an image (delegates to tagging engine)"""
         return self.tagging_engine.get_image_tags(image_path)
+
+    def predict_tags_for_image(self, image_path: str) -> List[Dict[str, Any]]:
+        """Delegate single-image prediction to the tagging engine."""
+        return self.tagging_engine.predict_tags_for_image(image_path)
     
     def get_all_available_tags(self) -> List[str]:
         """Get all available tags in the system (delegates to tagging engine)"""

@@ -1,0 +1,58 @@
+{
+  "hyperparameters": {
+    "learning_rate": 0.001,
+    "batch_size": 32,
+    "epochs": 25,
+    "dropout_rate": 0.35,
+    "embedding_dim": 128,
+    "hidden_layers": [
+      256,
+      128,
+      64
+    ],
+    "activation": "relu",
+    "early_stopping_patience": 8,
+    "validation_split": 0.15,
+    "image_size": [
+      224,
+      224
+    ],
+    "normalization_mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "normalization_std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "confidence_threshold": 0.35,
+    "max_suggestions": 5
+  },
+  "app_config": {
+    "default_image_folder": "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder",
+    "database_path": "./data/image_metadata.db",
+    "model_weights_dir": "./data/models",
+    "cache_dir": "./data/cache",
+    "thumbnail_size": [
+      120,
+      120
+    ],
+    "gallery_columns": 5,
+    "theme": "default",
+    "use_gpu": true,
+    "num_workers": 4,
+    "model_type": "resnet18",
+    "auto_load_model": true,
+    "supervised_mode": true,
+    "bootstrap_from_folders": true,
+    "tag_root_folder": "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder",
+    "auto_folder_tags": false,
+    "db_root_folder": "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder",
+    "coco_data_dir": "./data/coco",
+    "coco_max_images": 3500,
+    "enable_metrics": true,
+    "log_level": "INFO"
+  }
+}

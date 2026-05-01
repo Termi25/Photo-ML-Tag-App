@@ -1,0 +1,78 @@
+{
+  "num_classes": 3,
+  "classes": [
+    "class_0",
+    "class_1",
+    "class_2"
+  ],
+  "multi_label": true,
+  "training_metrics": {
+    "losses": [
+      0.2000049352645874,
+      0.1805323213338852,
+      0.15444958209991455
+    ],
+    "accuracies": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "epochs_completed": 3,
+    "total_time": 0.33108019828796387,
+    "val_macro_f1": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "val_micro_f1": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "train_accuracies": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "val_accuracies": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "cancelled": false
+  },
+  "hyperparameters": {
+    "learning_rate": 0.001,
+    "batch_size": 32,
+    "epochs": 10,
+    "dropout_rate": 0.3,
+    "embedding_dim": 128,
+    "hidden_layers": [
+      256,
+      128,
+      64
+    ],
+    "activation": "relu",
+    "early_stopping_patience": 3,
+    "validation_split": 0.2,
+    "image_size": [
+      224,
+      224
+    ],
+    "normalization_mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "normalization_std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "confidence_threshold": 0.5,
+    "max_suggestions": 5
+  },
+  "model_type": "resnet18",
+  "saved_at": "2026-04-29T20:03:52.961063",
+  "model_name": "latest"
+}

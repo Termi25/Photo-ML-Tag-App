@@ -9,119 +9,58 @@ If Redis is not available, falls back to an in-memory LRU-style cache.
 
 import sqlite3
 import json
+from collections import OrderedDict
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 import pickle
 
-# Optional Redis import — falls back to in-memory cache if not installed/reachable
-_redis_lib: Any = None  # pre-bound so it is always defined regardless of import outcome
-try:
-    import redis as _redis_lib  # type: ignore[import-untyped,import-not-found]
-    _REDIS_AVAILABLE = True
-except Exception:
-    # Catches ImportError, ModuleNotFoundError, and any broken-install errors
-    _REDIS_AVAILABLE = False
+# Sentinel for "value not in cache" — distinct from None (valid return)
+_CACHE_MISS = object()
+
+_CACHE_MAX = 8192  # max entries in the in-process LRU cache
 
 
 class TagCache:
+    """In-process LRU cache for image/tag lookups.
+
+    Uses a single ``collections.OrderedDict`` so that get, set, and eviction
+    are all O(1).  No network dependency, no serialisation overhead.
     """
-    Cache layer for image/tag lookups.  Uses Redis when available (fast, persistent between
-    process restarts) and transparently degrades to an in-memory dict otherwise.
-    """
 
-    _TTL = 3600  # seconds for Redis TTL
+    def __init__(self, max_size: int = _CACHE_MAX) -> None:
+        self._store: OrderedDict[str, Any] = OrderedDict()
+        self._max = max_size
 
-    def __init__(self, host: str = 'localhost', port: int = 6379,
-                 redis_db: int = 0, max_memory_size: int = 4096):
-        self._client = None
-        self._mem: Dict[str, Any] = {}
-        self._order: List[str] = []      # insertion-order list for simple LRU eviction
-        self._max = max_memory_size
-
-        if _REDIS_AVAILABLE:
-            try:
-                c = _redis_lib.Redis(host=host, port=port, db=redis_db,
-                                     socket_connect_timeout=1, decode_responses=True)
-                c.ping()
-                self._client = c
-                print("✓ Redis cache connected (fast tag lookups enabled)")
-            except Exception as exc:
-                print(f"Redis not reachable ({exc}), using in-memory cache")
-
-    # ------------------------------------------------------------------
     def get(self, key: str) -> Any:
-        if self._client:
-            try:
-                raw = self._client.get(key)
-                if raw is not None:
-                    return json.loads(raw)
-            except Exception:
-                pass
-        return self._mem.get(key)
+        try:
+            self._store.move_to_end(key)
+            return self._store[key]
+        except KeyError:
+            return None
 
     def set(self, key: str, value: Any) -> None:
-        serialised = json.dumps(value, default=str)
-        if self._client:
-            try:
-                self._client.setex(key, self._TTL, serialised)
-                return
-            except Exception:
-                pass
-        # In-memory path
-        if key not in self._mem:
-            if len(self._mem) >= self._max:
-                oldest = self._order.pop(0)
-                self._mem.pop(oldest, None)
-            self._order.append(key)
-        self._mem[key] = value
+        if key in self._store:
+            self._store.move_to_end(key)
+            self._store[key] = value
+        else:
+            if len(self._store) >= self._max:
+                self._store.popitem(last=False)  # evict oldest (FIFO end)
+            self._store[key] = value
 
     def delete(self, key: str) -> None:
-        if self._client:
-            try:
-                self._client.delete(key)
-            except Exception:
-                pass
-        self._mem.pop(key, None)
-        if key in self._order:
-            self._order.remove(key)
+        self._store.pop(key, None)
 
     def delete_pattern(self, prefix: str) -> None:
-        """Delete all keys that start with *prefix*."""
-        if self._client:
-            try:
-                keys = self._client.keys(f"{prefix}*")
-                if keys:
-                    self._client.delete(*keys)
-            except Exception:
-                pass
-        for k in list(self._mem.keys()):
-            if k.startswith(prefix):
-                self.delete(k)
-
-    # Known key prefixes owned by this app (used for targeted Redis cleanup)
-    _KEY_PREFIXES = ('img:', 'tag_id:', 'image_tags:')
-    _KEY_SINGLES  = ('all_tags',)
+        for k in [k for k in self._store if k.startswith(prefix)]:
+            del self._store[k]
 
     def flush(self) -> None:
-        if self._client:
-            try:
-                # Delete ONLY the keys this app manages — never wipe the whole DB
-                keys_to_delete: list = []
-                for prefix in self._KEY_PREFIXES:
-                    keys_to_delete.extend(self._client.keys(f"{prefix}*"))
-                for single in self._KEY_SINGLES:
-                    keys_to_delete.extend(self._client.keys(single))
-                if keys_to_delete:
-                    self._client.delete(*keys_to_delete)
-            except Exception:
-                pass
-        self._mem.clear()
-        self._order.clear()
+        self._store.clear()
 
     @property
     def backend(self) -> str:
-        return "redis" if self._client else "memory"
+        return "memory"
 
 
 # Module-level shared cache instance
@@ -137,6 +76,8 @@ class MetadataStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.connection: sqlite3.Connection
         self._cache = _tag_cache
+        # Per-folder cache of hidden image paths — invalidated on set_image_hidden()
+        self._hidden_folder_cache: Dict[str, set] = {}
         self.init_database()
     
     # ------------------------------------------------------------------
@@ -155,7 +96,8 @@ class MetadataStore:
         root_path = Path(root_folder)
         self.db_path = root_path / ".image_tags.db"
         root_path.mkdir(parents=True, exist_ok=True)
-        self._cache.flush()   # wipe cache on DB switch
+        self._cache.flush()              # wipe tag cache on DB switch
+        self._hidden_folder_cache = {}   # wipe hidden-paths cache
         self.init_database()
         self._hide_database_file()
         print(f"Database root set to: {self.db_path}")
@@ -273,6 +215,9 @@ class MetadataStore:
             self.connection.commit()
         except Exception:
             pass  # Column already exists
+
+        # Index that makes WHERE hidden = 1 fast even on large collections
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_images_hidden ON images(hidden, file_path)')
 
         self.connection.commit()
         
@@ -420,45 +365,24 @@ class MetadataStore:
     
     def get_image_by_path(self, file_path: str) -> Optional[Dict[str, Any]]:
         """Get image record by file path (normalized, cached)"""
-        # Check cache first
         try:
             normalized_input = str(Path(file_path).resolve())
-        except:
+        except Exception:
             normalized_input = file_path
 
         cache_key = f"img:{normalized_input}"
         cached = self._cache.get(cache_key)
-        if cached is not None:
-            # Return None sentinel stored as False
-            return cached if cached is not False else None
+        if cached is not _CACHE_MISS and cached is not None:
+            return cached  # type: ignore[return-value]
+        if cached is _CACHE_MISS:
+            return None
 
         cursor = self.connection.cursor()
-        
-        # Normalize the input path for comparison
-        try:
-            normalized_input = str(Path(file_path).resolve())
-        except:
-            normalized_input = file_path
-        
-        # First try exact match
-        cursor.execute('SELECT * FROM images WHERE file_path = ?', (file_path,))
+
+        # Use the normalized path — add_image() stores resolved paths
+        cursor.execute('SELECT * FROM images WHERE file_path = ?', (normalized_input,))
         row = cursor.fetchone()
-        
-        # If not found, try normalized comparison
-        if not row:
-            cursor.execute('SELECT * FROM images')
-            all_images = cursor.fetchall()
-            
-            for img_row in all_images:
-                stored_path = img_row[1]
-                try:
-                    normalized_stored = str(Path(stored_path).resolve())
-                    if normalized_stored == normalized_input:
-                        row = img_row
-                        break
-                except:
-                    continue
-        
+
         if row:
             record = {
                 'id': row[0],
@@ -472,10 +396,89 @@ class MetadataStore:
             }
             self._cache.set(cache_key, record)
             return record
-        # Store a False sentinel so we don't re-query for unknown paths repeatedly
-        self._cache.set(cache_key, False)
+        # Cache miss — store sentinel so we skip the DB on repeated lookups
+        self._cache.set(cache_key, _CACHE_MISS)
         return None
     
+    def search_images_advanced(
+        self,
+        included_tags: List[str],
+        excluded_tags: List[str],
+        sort_by: str = 'name',
+        sort_asc: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Return images that have ALL included_tags and NONE of excluded_tags.
+
+        Parameters
+        ----------
+        included_tags : tags the image must have (AND semantics).
+        excluded_tags : tags the image must NOT have.
+        sort_by       : 'name' | 'date' | 'size'
+        sort_asc      : ascending when True.
+        """
+        cursor = self.connection.cursor()
+
+        # Build the ORDER BY clause
+        _order_col = {
+            'name': 'i.file_name',
+            'date': 'i.added_to_db',
+            'size': 'i.file_size',
+        }.get(sort_by, 'i.file_name')
+        _direction = 'ASC' if sort_asc else 'DESC'
+
+        params: list = []
+
+        # Included-tags subquery (AND — image must have every included tag)
+        if included_tags:
+            incl_placeholders = ','.join('?' * len(included_tags))
+            included_clause = f"""
+                i.id IN (
+                    SELECT it.image_id
+                    FROM image_tags it JOIN tags t ON it.tag_id = t.id
+                    WHERE t.tag_name IN ({incl_placeholders})
+                    GROUP BY it.image_id
+                    HAVING COUNT(DISTINCT t.tag_name) = ?
+                )"""
+            params += included_tags + [len(included_tags)]
+        else:
+            included_clause = '1=1'
+
+        # Excluded-tags subquery (image must NOT have any excluded tag)
+        if excluded_tags:
+            excl_placeholders = ','.join('?' * len(excluded_tags))
+            excluded_clause = f"""
+                i.id NOT IN (
+                    SELECT it.image_id
+                    FROM image_tags it JOIN tags t ON it.tag_id = t.id
+                    WHERE t.tag_name IN ({excl_placeholders})
+                )"""
+            params += excluded_tags
+        else:
+            excluded_clause = '1=1'
+
+        query = f"""
+            SELECT i.id, i.file_path, i.file_name,
+                   GROUP_CONCAT(t.tag_name) AS tags
+            FROM images i
+            LEFT JOIN image_tags it ON i.id = it.image_id
+            LEFT JOIN tags t ON it.tag_id = t.id
+            WHERE {included_clause}
+              AND {excluded_clause}
+            GROUP BY i.id
+            ORDER BY {_order_col} {_direction}
+        """
+        cursor.execute(query, params)
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'id':        row[0],
+                'file_path': row[1],
+                'file_name': row[2],
+                'tags':      row[3].split(',') if row[3] else [],
+            })
+        return results
+
     def search_images_by_tags(self, tag_names: List[str], match_all: bool = True) -> List[Dict[str, Any]]:
         """Search images by tags with Boolean logic"""
         cursor = self.connection.cursor()
@@ -558,7 +561,7 @@ class MetadataStore:
         cursor.execute('UPDATE images SET hidden = ? WHERE id = ?',
                        (1 if hidden else 0, image_id))
         self.connection.commit()
-        # Invalidate cached record so the next read sees the new flag
+        # Invalidate tag-record cache
         cursor.execute('SELECT file_path FROM images WHERE id = ?', (image_id,))
         row = cursor.fetchone()
         if row:
@@ -567,6 +570,8 @@ class MetadataStore:
                 self._cache.delete(f"img:{Path(row[0]).resolve()}")
             except Exception:
                 pass
+        # Invalidate the folder hidden-paths cache (any folder may be affected)
+        self._hidden_folder_cache.clear()
 
     def is_image_hidden(self, image_id: int) -> bool:
         """Return True if the image is marked hidden in the app database."""
@@ -577,18 +582,35 @@ class MetadataStore:
 
     def get_hidden_image_paths_in_folder(self, folder: str) -> set:
         """Return the set of absolute file paths that are marked hidden
-        and whose path starts with *folder*."""
-        folder_norm = str(Path(folder).resolve()).replace('\\', '/')
+        and reside inside *folder*.
+
+        Results are cached per folder and invalidated whenever set_image_hidden()
+        is called, so repeated calls during a single directory view are free.
+        The idx_images_hidden composite index (hidden, file_path) makes the DB
+        scan cheap even for large collections.
+        """
+        try:
+            folder_resolved = str(Path(folder).resolve())
+        except Exception:
+            folder_resolved = folder
+
+        cached = self._hidden_folder_cache.get(folder_resolved)
+        if cached is not None:
+            return cached
+
         cursor = self.connection.cursor()
+        # The composite index on (hidden, file_path) turns this into an index range scan
         cursor.execute('SELECT file_path FROM images WHERE hidden = 1')
         result: set = set()
         for (fp,) in cursor.fetchall():
             try:
-                norm = str(Path(fp).resolve()).replace('\\', '/')
-                if norm.startswith(folder_norm):
-                    result.add(str(Path(fp).resolve()))
+                fp_resolved = str(Path(fp).resolve())
+                if fp_resolved.startswith(folder_resolved):
+                    result.add(fp_resolved)
             except Exception:
                 pass
+
+        self._hidden_folder_cache[folder_resolved] = result
         return result
 
     # ------------------------------------------------------------------
@@ -735,8 +757,26 @@ class ModelStorage:
         # ---- legacy "latest" files kept for InferenceEngine.load_model('latest') ----
         legacy_weights  = self.models_dir / f"{model_name}_weights.pkl"
         legacy_metadata = self.models_dir / f"{model_name}_metadata.json"
+
+        # Ensure any torch tensors are moved to CPU before pickling to avoid
+        # issues when tensors reside on CUDA devices (which can hang or
+        # produce large GPU-memory references during pickling).
+        try:
+            import torch
+
+            def _to_cpu(obj):
+                if isinstance(obj, dict):
+                    return {k: _to_cpu(v) for k, v in obj.items()}
+                if isinstance(obj, torch.Tensor):
+                    return obj.cpu()
+                return obj
+
+            model_state_to_save = _to_cpu(model_state)
+        except Exception:
+            model_state_to_save = model_state
+
         with open(legacy_weights, 'wb') as f:
-            pickle.dump(model_state, f)
+            pickle.dump(model_state_to_save, f)
         with open(legacy_metadata, 'w') as f:
             json.dump(metadata, f, indent=2)
 
@@ -744,7 +784,7 @@ class ModelStorage:
         stamp_weights  = self.models_dir / f"model_{model_type}_{ts}.pkl"
         stamp_metadata = self.models_dir / f"model_{model_type}_{ts}_metadata.json"
         with open(stamp_weights, 'wb') as f:
-            pickle.dump(model_state, f)
+            pickle.dump(model_state_to_save if 'model_state_to_save' in locals() else model_state, f)
         with open(stamp_metadata, 'w') as f:
             json.dump(metadata, f, indent=2)
 
@@ -772,11 +812,26 @@ class ModelStorage:
 
     def load_model_weights(self, model_name: str) -> tuple:
         """Load model weights and metadata"""
-        model_path    = self.models_dir / f"{model_name}_weights.pkl"
-        metadata_path = self.models_dir / f"{model_name}_metadata.json"
+        # Support both legacy names (<name>_weights.pkl) and timestamped
+        # names (model_<type>_<YYYYMMDD_HHMMSS>.pkl).
+        name = str(model_name).strip()
+        if name.endswith('.pkl'):
+            name = Path(name).stem
 
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model not found: {model_path}")
+        legacy_model_path    = self.models_dir / f"{name}_weights.pkl"
+        legacy_metadata_path = self.models_dir / f"{name}_metadata.json"
+
+        stamped_model_path    = self.models_dir / f"{name}.pkl"
+        stamped_metadata_path = self.models_dir / f"{name}_metadata.json"
+
+        if legacy_model_path.exists():
+            model_path = legacy_model_path
+            metadata_path = legacy_metadata_path
+        elif stamped_model_path.exists():
+            model_path = stamped_model_path
+            metadata_path = stamped_metadata_path
+        else:
+            raise FileNotFoundError(f"Model not found: {legacy_model_path} or {stamped_model_path}")
 
         with open(model_path, 'rb') as f:
             model_state = pickle.load(f)
@@ -790,25 +845,64 @@ class ModelStorage:
 
     def list_models(self) -> List[str]:
         """List all available models"""
-        models = []
+        # Prefer showing the most recently written models first.
+        found: Dict[str, float] = {}
+
+        # Legacy: <name>_weights.pkl
         for file in self.models_dir.glob("*_weights.pkl"):
-            model_name = file.stem.replace('_weights', '')
-            models.append(model_name)
-        return models
+            try:
+                model_name = file.stem.replace('_weights', '')
+                found[model_name] = max(found.get(model_name, 0.0), file.stat().st_mtime)
+            except Exception:
+                pass
+
+        # Timestamped: model_<type>_<ts>.pkl (saved alongside metadata)
+        for file in self.models_dir.glob("model_*.pkl"):
+            try:
+                model_name = file.stem
+                found[model_name] = max(found.get(model_name, 0.0), file.stat().st_mtime)
+            except Exception:
+                pass
+
+        models = sorted(found.items(), key=lambda kv: kv[1], reverse=True)
+        return [name for name, _ts in models]
 
     def model_exists(self, model_name: str) -> bool:
         """Check if model exists"""
-        return (self.models_dir / f"{model_name}_weights.pkl").exists()
+        name = str(model_name).strip()
+        if name.endswith('.pkl'):
+            name = Path(name).stem
+        return (
+            (self.models_dir / f"{name}_weights.pkl").exists()
+            or (self.models_dir / f"{name}.pkl").exists()
+        )
 
     def delete_model(self, model_name: str):
         """Delete a model and its metadata"""
-        model_path    = self.models_dir / f"{model_name}_weights.pkl"
-        metadata_path = self.models_dir / f"{model_name}_metadata.json"
-        if model_path.exists():
-            model_path.unlink()
-        if metadata_path.exists():
-            metadata_path.unlink()
-        print(f"Model deleted: {model_name}")
+        name = str(model_name).strip()
+        if name.endswith('.pkl'):
+            name = Path(name).stem
+
+        # Try legacy
+        legacy_model_path    = self.models_dir / f"{name}_weights.pkl"
+        legacy_metadata_path = self.models_dir / f"{name}_metadata.json"
+        # Try timestamped
+        stamped_model_path    = self.models_dir / f"{name}.pkl"
+        stamped_metadata_path = self.models_dir / f"{name}_metadata.json"
+
+        removed_any = False
+        for p in (legacy_model_path, legacy_metadata_path, stamped_model_path, stamped_metadata_path):
+            try:
+                if p.exists():
+                    p.unlink()
+                    removed_any = True
+            except Exception:
+                pass
+
+        if removed_any:
+            print(f"Model deleted: {name}")
+        else:
+            print(f"Model not found for deletion: {name}")
 
 
 # Initialize global instances

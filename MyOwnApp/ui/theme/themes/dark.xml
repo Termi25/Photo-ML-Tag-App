@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dark theme — VS Code / GitHub-inspired.
+-->
+<theme name="Dark" version="1.0" author="App">
+
+  <meta>
+    <description>Dark theme inspired by VS Code dark+</description>
+    <base_ttk_theme>clam</base_ttk_theme>
+  </meta>
+
+  <colors>
+    <!-- Accent -->
+    <accent>#4fc3f7</accent>
+    <accent_hover>#81d4fa</accent_hover>
+    <accent_pressed>#29b6f6</accent_pressed>
+    <accent_light>#1a3a4a</accent_light>
+
+    <!-- Surfaces -->
+    <background>#1e1e1e</background>
+    <card>#252526</card>
+    <sidebar>#252526</sidebar>
+    <sidebar_fg>#cccccc</sidebar_fg>
+
+    <!-- Text -->
+    <foreground>#d4d4d4</foreground>
+    <foreground_dim>#888888</foreground_dim>
+    <foreground_disabled>#555555</foreground_disabled>
+
+    <!-- Interactive -->
+    <hover>#2a2d2e</hover>
+    <pressed>#37373d</pressed>
+    <border>#3e3e42</border>
+    <focus_ring>#4fc3f7</focus_ring>
+
+    <!-- Selection -->
+    <selection_bg>#094771</selection_bg>
+    <selection_fg>#ffffff</selection_fg>
+
+    <!-- Status colours -->
+    <success>#4caf50</success>
+    <warning>#ffa726</warning>
+    <error>#f44336</error>
+
+    <!-- Component-specific -->
+    <trough>#3e3e42</trough>
+    <progressbar>#4fc3f7</progressbar>
+    <treeview_heading_bg>#2d2d30</treeview_heading_bg>
+    <treeview_row_alt>#222222</treeview_row_alt>
+    <status_bar_bg>#007acc</status_bar_bg>
+    <tooltip_bg>#252526</tooltip_bg>
+    <tooltip_fg>#d4d4d4</tooltip_fg>
+
+    <!-- Search chips -->
+    <chip_include>#1b5e20</chip_include>
+    <chip_exclude>#b71c1c</chip_exclude>
+    <chip_include_fg>#a5d6a7</chip_include_fg>
+    <chip_exclude_fg>#ef9a9a</chip_exclude_fg>
+  </colors>
+
+  <fonts>
+    <font name="default"  family="Segoe UI" size="10"/>
+    <font name="bold"     family="Segoe UI" size="10" weight="bold"/>
+    <font name="heading"  family="Segoe UI" size="12" weight="bold"/>
+    <font name="small"    family="Segoe UI" size="9"/>
+    <font name="mono"     family="Consolas" size="9"/>
+    <font name="large"    family="Segoe UI" size="13" weight="bold"/>
+    <font name="ml_label" family="Segoe UI" size="12" weight="bold"/>
+    <font name="ml_body"  family="Segoe UI" size="11"/>
+    <font name="advanced" family="Segoe UI" size="11"/>
+  </fonts>
+
+  <layout>
+    <row_height>24</row_height>
+    <button_padding_x>8</button_padding_x>
+    <button_padding_y>4</button_padding_y>
+    <border_width>1</border_width>
+    <corner_radius>4</corner_radius>
+  </layout>
+
+</theme>
