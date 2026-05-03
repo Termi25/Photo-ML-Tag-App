@@ -177,6 +177,42 @@ _BUILTIN_PROFILES: List[TrainingProfile] = [
         validation_split=0.15, confidence_threshold=0.35,
         builtin=True,
     ),
+    # ── COCO-specific profiles ────────────────────────────────────────────
+    # COCO has 80 multi-label classes and up to 5 000 images, so larger
+    # batches and a slightly higher LR work well.  Confidence threshold is
+    # lowered to 0.30 because multi-label sigmoid scores sit in a narrower
+    # range than single-label softmax.
+    TrainingProfile(
+        name='COCO — ResNet-18', model_type='resnet18',
+        learning_rate=0.001, batch_size=32, epochs=20,
+        dropout_rate=0.3, early_stopping_patience=5,
+        validation_split=0.15, confidence_threshold=0.30,
+        builtin=True,
+    ),
+    TrainingProfile(
+        name='COCO — EfficientNet-B0', model_type='efficientnet_b0',
+        learning_rate=0.0005, batch_size=32, epochs=20,
+        dropout_rate=0.3, early_stopping_patience=5,
+        validation_split=0.15, confidence_threshold=0.30,
+        builtin=True,
+    ),
+    # ── COCO + Folders combined profiles ─────────────────────────────────
+    # When training on both sources the label space is larger and the data
+    # more diverse, so more epochs and a lower LR help convergence.
+    TrainingProfile(
+        name='COCO+Folders — ResNet-18', model_type='resnet18',
+        learning_rate=0.0005, batch_size=32, epochs=25,
+        dropout_rate=0.3, early_stopping_patience=7,
+        validation_split=0.15, confidence_threshold=0.30,
+        builtin=True,
+    ),
+    TrainingProfile(
+        name='COCO+Folders — EfficientNet-B0', model_type='efficientnet_b0',
+        learning_rate=0.0003, batch_size=32, epochs=25,
+        dropout_rate=0.3, early_stopping_patience=7,
+        validation_split=0.15, confidence_threshold=0.30,
+        builtin=True,
+    ),
 ]
 
 

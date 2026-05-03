@@ -1,0 +1,61 @@
+{
+  "folder_previews": {
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\_INBOX": {
+      "snapshot": "ac2c4a127ee97014e9de39e689549dafe872a7301e2c0be804b6f63e2e43e9cb",
+      "preview_mtime": 1777378916
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\ML_Training_Data": {
+      "snapshot": "",
+      "preview_mtime": 1772380862
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\CYBERPUNK": {
+      "snapshot": "31d01ddd3dbc8638070d624fabf5058347f18ff27ce36a865fd400f47ebadb3d",
+      "preview_mtime": 1772369587
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\BORDERLANDS": {
+      "snapshot": "0640c7dfd98dc5751fee281edd67509ee8c57b9b1d5c45f7ae7275f655fbd855",
+      "preview_mtime": 1772369587
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\FNAF": {
+      "snapshot": "2992a1a88fcd1c61231c172c0e8548084be707683bb1dd196f4384d4f251f26f",
+      "preview_mtime": 1772369588
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\NO MANS SKY": {
+      "snapshot": "8ca4fdfc62e94e90ab3f9a4589ad9625402ac991697eae09cb479687f21dc60e",
+      "preview_mtime": 1772369590
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\SYSTEM SHOCK": {
+      "snapshot": "b5434e03a3c0e20405c2e84df328ad76da57a2753952f6dbab8182656176d3f7",
+      "preview_mtime": 1772369591
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\VALORANT": {
+      "snapshot": "dbb0325afbb0384daa560ef3ec04628d65f5546a9eb384c3742bc9b072447b77",
+      "preview_mtime": 1772369592
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\DOOM": {
+      "snapshot": "b1368c6438a2b87f8435f7e219520810ee6adaa88a7e1ab7dc9fa2a5b64daf75",
+      "preview_mtime": 1772369588
+    },
+    "D:\\Diverse\\Facultate CSIE\\Cercetare\\Cercetare doctorat\\FINISHED\\Proiect 3 - Photo Categ App\\App Project\\ExampleImageFolder\\VIDEO GAMES\\WITCHER": {
+      "snapshot": "426c314ef58ed00d724233e59c0fdfee4ec3dd89eee0e140794b5e3fab8c86cd",
+      "preview_mtime": 1772369592
+    }
+  },
+  "ui": {
+    "view_mode": "icons",
+    "supervised_mode": true,
+    "gallery_cols": 5,
+    "gallery_zoom": 0,
+    "file_sort": "name",
+    "search_sort": "name",
+    "search_sort_asc": true,
+    "search_mode": "simple",
+    "simple_search": "",
+    "advanced_search": {
+      "query": "",
+      "tag_states": {}
+    },
+    "tag_display_mode": "list",
+    "control_tab": 2
+  }
+}

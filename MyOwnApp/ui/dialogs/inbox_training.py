@@ -203,7 +203,8 @@ class InboxTrainingDialog:
         img_path = self.images[idx]
         self._img_name_var.set(img_path.name)
         try:
-            pil = Image.open(str(img_path)).convert('RGB')
+            with Image.open(str(img_path)) as raw:
+                pil = raw.convert('RGB')
             pil.thumbnail((self._PREVIEW_SZ, self._PREVIEW_SZ), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(pil)
             self._preview_ref = photo

@@ -88,8 +88,13 @@ class FileWatcher:
             try:
                 self.observer.join(timeout=2)
             except TypeError:
-                # Older watchdog versions may not support timeout.
-                self.observer.join()
+                # Older watchdog versions may not support a timeout keyword.
+                # Use a Thread-level join with timeout as a hard safety net.
+                import threading as _threading
+                t = _threading.Thread(target=self.observer.join)
+                t.daemon = True
+                t.start()
+                t.join(timeout=2)
             try:
                 if hasattr(self.observer, 'is_alive') and self.observer.is_alive():
                     print("⚠ Watcher did not stop within timeout")
@@ -253,8 +258,8 @@ class TaggingEngine:
             # Load existing EXIF data
             try:
                 exif_dict = piexif.load(image_path)
-            except:
-                # Create new EXIF dict if none exists
+            except Exception:
+                # Create new EXIF dict if none exists or data is unreadable
                 exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
             
             # Windows Photo Viewer and other apps read from IFD (0th) tag 0x9c9e (XPKeywords)
@@ -380,6 +385,11 @@ class TrainingManager:
     def cancel(self) -> None:
         self._cancel_event.set()
 
+    def _emit(self, kind: str, value) -> None:
+        cb = self.progress_callback
+        if cb:
+            cb(kind, value)
+
     def queue_training_task(self, task_type: str, **kwargs):
         task = {'type': task_type, 'params': kwargs, 'queued_at': time.time()}
         self.training_queue.put(task)
@@ -419,6 +429,10 @@ class TrainingManager:
                     self._fine_tune_inbox(task['params'])
                 elif task['type'] == 'unsupervised_clustering':
                     self._unsupervised_clustering(task['params'])
+                elif task['type'] == 'train_from_coco':
+                    self._train_from_coco(task['params'])
+                elif task['type'] == 'train_from_both':
+                    self._train_from_both(task['params'])
             except Exception as e:
                 import traceback
                 print(f"Error processing training task: {e}")
@@ -434,20 +448,21 @@ class TrainingManager:
             self.on_training_complete_callback()
 
     def _train_from_database(self, params: Dict[str, Any]):
-        if self.progress_callback:
-            self.progress_callback('status', 'Loading training data from database...')
+        _cb = self.progress_callback
+        self.training_loop.data_source = 'database'
+        self._emit('status', 'Loading training data from database...')
 
         image_paths, labels = self.training_loop.prepare_data_from_database(
-            progress_callback=self.progress_callback)
+            progress_callback=_cb)
 
         if not image_paths:
-            if self.progress_callback:
-                self.progress_callback('error', 'No training data available in database')
+            self._emit('error', 'No training data available in database')
             return
 
         metrics = self.training_loop.train(
             image_paths, labels,
-            progress_callback=self.progress_callback,
+            test_split=0.15,
+            progress_callback=_cb,
             cancel_event=self._cancel_event,
         )
         if metrics.get('cancelled'):
@@ -456,29 +471,29 @@ class TrainingManager:
         val_accs = metrics.get('val_accuracies') or metrics.get('accuracies') or []
         if val_accs:
             print(f"Training completed. Final val accuracy: {val_accs[-1]:.2f}%")
-        if self.progress_callback:
-            self.progress_callback('status', 'Loading trained model...')
+        self._report_test_results(metrics)
+        self._emit('status', 'Loading trained model...')
         self._auto_load_model()
-        if self.progress_callback:
-            self.progress_callback('complete', True)
+        self._emit('complete', True)
 
     def _train_from_folders(self, params: Dict[str, Any]):
+        _cb = self.progress_callback
+        self.training_loop.data_source = 'folders'
         root_folder = params.get('root_folder', config_manager.app_config.default_image_folder)
-        if self.progress_callback:
-            self.progress_callback('status', 'Scanning folders for training data...')
-            self.progress_callback('detail', f'Root folder: {root_folder}')
+        self._emit('status', 'Scanning folders for training data...')
+        self._emit('detail', f'Root folder: {root_folder}')
 
         image_paths, labels = self.training_loop.prepare_data_from_folders(
-            root_folder, progress_callback=self.progress_callback)
+            root_folder, progress_callback=_cb)
 
         if not image_paths:
-            if self.progress_callback:
-                self.progress_callback('error', 'No images found in folder structure')
+            self._emit('error', 'No images found in folder structure')
             return
 
         metrics = self.training_loop.train(
             image_paths, labels,
-            progress_callback=self.progress_callback,
+            test_split=0.15,
+            progress_callback=_cb,
             cancel_event=self._cancel_event,
         )
         if metrics.get('cancelled'):
@@ -487,16 +502,87 @@ class TrainingManager:
         val_accs = metrics.get('val_accuracies', [])
         if val_accs:
             print(f"Training completed. Final val accuracy: {val_accs[-1]:.2f}%")
-        if self.progress_callback:
-            self.progress_callback('status', 'Loading trained model...')
+        self._report_test_results(metrics)
+        self._emit('status', 'Loading trained model...')
         self._auto_load_model()
-        if self.progress_callback:
-            self.progress_callback('complete', True)
+        self._emit('complete', True)
+
+    def _train_from_coco(self, params: Dict[str, Any]):
+        _cb = self.progress_callback
+        self.training_loop.data_source = 'coco'
+        coco_dir = params.get('coco_dir', config_manager.app_config.coco_data_dir or './data/coco')
+        coco_max = int(params.get('coco_max', 0))
+        self._emit('status', 'Loading COCO dataset...')
+        self._emit('detail', f'COCO directory: {coco_dir}')
+        self._emit('detail', f'Max images: {coco_max if coco_max > 0 else 5000}')
+
+        from coco_benchmark import COCOBenchmarkLoader
+        max_images = coco_max if coco_max > 0 else 5000
+        loader = COCOBenchmarkLoader(coco_dir, max_images=max_images)
+        image_paths, labels = loader.load_data(progress_callback=_cb)
+
+        if not image_paths:
+            self._emit('error', 'No COCO images could be loaded')
+            return
+
+        metrics = self.training_loop.train(
+            image_paths, labels,
+            test_split=0.15,
+            progress_callback=_cb,
+            cancel_event=self._cancel_event,
+        )
+        if metrics.get('cancelled'):
+            return
+
+        self._report_test_results(metrics)
+        self._emit('status', 'Loading trained model...')
+        self._auto_load_model()
+        self._emit('complete', True)
+
+    def _train_from_both(self, params: Dict[str, Any]):
+        _cb = self.progress_callback
+        self.training_loop.data_source = 'both'
+        root_folder = params.get('root_folder', config_manager.app_config.default_image_folder)
+        coco_dir = params.get('coco_dir', config_manager.app_config.coco_data_dir or './data/coco')
+        coco_max = int(params.get('coco_max', 0))
+
+        self._emit('status', 'Loading folder data...')
+        folder_paths, folder_labels = self.training_loop.prepare_data_from_folders(
+            root_folder, progress_callback=_cb)
+
+        self._emit('status', 'Loading COCO dataset...')
+        from coco_benchmark import COCOBenchmarkLoader
+        max_images = coco_max if coco_max > 0 else 5000
+        loader = COCOBenchmarkLoader(coco_dir, max_images=max_images)
+        coco_paths, coco_labels = loader.load_data(progress_callback=_cb)
+
+        image_paths = folder_paths + coco_paths
+        labels = folder_labels + coco_labels
+
+        if not image_paths:
+            self._emit('error', 'No training data found from folders or COCO')
+            return
+
+        metrics = self.training_loop.train(
+            image_paths, labels,
+            test_split=0.15,
+            progress_callback=_cb,
+            cancel_event=self._cancel_event,
+        )
+        if metrics.get('cancelled'):
+            return
+
+        self._report_test_results(metrics)
+        self._emit('status', 'Loading trained model...')
+        self._auto_load_model()
+        self._emit('complete', True)
 
     def _fine_tune(self, params: Dict[str, Any]):
         self._train_from_database(params)
 
     def _fine_tune_inbox(self, params: Dict[str, Any]):
+        _cb = self.progress_callback
+        self.training_loop.data_source = 'inbox'
         annotations: Dict[str, List[str]] = params.get('annotations', {})
         epochs: int = int(params.get('epochs', 5))
         if not annotations:
@@ -504,19 +590,17 @@ class TrainingManager:
         try:
             metrics = self.training_loop.fine_tune_from_annotations(
                 annotations=annotations, epochs=epochs,
-                progress_callback=self.progress_callback)
+                progress_callback=_cb)
             if metrics:
                 losses = metrics.get('losses', [])
                 print(f'Fine-tuning complete — final loss: {losses[-1]:.4f}' if losses else 'Fine-tuning complete')
                 self._auto_load_model()
-            if self.progress_callback:
-                self.progress_callback('complete', True)
+            self._emit('complete', True)
         except Exception as exc:
             import traceback
             print(f'Fine-tuning error: {exc}')
             print(traceback.format_exc())
-            if self.progress_callback:
-                self.progress_callback('error', str(exc))
+            self._emit('error', str(exc))
 
     def _unsupervised_clustering(self, params: Dict[str, Any]):
         root_folder = params.get('root_folder', config_manager.app_config.default_image_folder)
@@ -546,6 +630,32 @@ class TrainingManager:
             'metrics': self.training_loop.training_metrics
         }
     
+    def _report_test_results(self, metrics: Dict[str, Any]) -> None:
+        """Push held-out test-set results to the progress dialog (if available)."""
+        test = metrics.get('test_results')
+        if not test or 'error' in test:
+            return
+        _cb = self.progress_callback
+        if not _cb:
+            return
+        _cb('status', 'Test-set evaluation complete')
+        _cb('detail', '── Held-out Test Set Results ──────────────────')
+        _cb('detail', f'  Images evaluated : {test.get("n_test_images", "?")}')
+        _cb('detail', f'  Accuracy         : {test.get("test_accuracy", 0):.2f}%')
+        _cb('detail', f'  Macro F1         : {test.get("macro_f1", 0):.4f}')
+        _cb('detail', f'  Micro F1         : {test.get("micro_f1", 0):.4f}')
+        per_class = test.get('per_class_f1', {})
+        if per_class:
+            top = sorted(per_class.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            bottom = sorted(per_class.items(), key=lambda kv: kv[1])[:5]
+            _cb('detail', '  Top-5 classes by F1:')
+            for cls, sc in top:
+                _cb('detail', f'    {cls}: {sc:.4f}')
+            _cb('detail', '  Bottom-5 classes by F1:')
+            for cls, sc in bottom:
+                _cb('detail', f'    {cls}: {sc:.4f}')
+        _cb('detail', '───────────────────────────────────────────────')
+
     def _auto_load_model(self):
         if not config_manager.app_config.auto_load_model:
             return
@@ -556,12 +666,10 @@ class TrainingManager:
             if controller is None:
                 return
             success = controller.tagging_engine.load_model('latest')
-            if self.progress_callback:
-                msg = '✓ Model loaded and ready for inference' if success else '⚠ Model saved but failed to load'
-                self.progress_callback('detail', msg)
+            msg = '✓ Model loaded and ready for inference' if success else '⚠ Model saved but failed to load'
+            self._emit('detail', msg)
         except Exception as e:
-            if self.progress_callback:
-                self.progress_callback('detail', f'⚠ Error loading model: {e}')
+            self._emit('detail', f'⚠ Error loading model: {e}')
 
     def cancel_training(self):
         self.cancel()
@@ -703,6 +811,21 @@ class LogicController:
             root_folder=self.current_directory
         )
     
+    def bootstrap_from_coco(self, coco_dir: str = '', coco_max: int = 0):
+        self.training_manager.queue_training_task(
+            'train_from_coco',
+            coco_dir=coco_dir or config_manager.app_config.coco_data_dir or './data/coco',
+            coco_max=coco_max,
+        )
+
+    def bootstrap_from_both(self, coco_dir: str = '', coco_max: int = 0):
+        self.training_manager.queue_training_task(
+            'train_from_both',
+            root_folder=self.current_directory,
+            coco_dir=coco_dir or config_manager.app_config.coco_data_dir or './data/coco',
+            coco_max=coco_max,
+        )
+
     def train_from_corrections(self):
         """Train model from user corrections in database"""
         self.training_manager.queue_training_task('train_from_database')

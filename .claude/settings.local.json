@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/Diverse/Facultate CSIE/Cercetare/Cercetare doctodart/FINISHED/Proiect 3 - Photo Categ App/App Project/MyOwnApp/**)",
+      "Bash(Get-ChildItem -Path \"d:\\\\Diverse\\\\Facultate CSIE\\\\Cercetare\\\\Cercetare doctorat\\\\FINISHED\\\\Proiect 3 - Photo Categ App\\\\App Project\\\\MyOwnApp\" -Recurse -File)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Get-ChildItem -Recurse -File -Filter \"*.py\")",
+      "Read(//d/Diverse/Fakultate CSIE/Cercetare/Cercetare doctorat/FINISHED/Proiect 3 - Photo Categ App/App Project/MyOwnApp/**)",
+      "Bash(Select-Object FullName)",
+      "Bash(python -c ' *)",
+      "Bash(python _patch_search.py)"
+    ]
+  }
+}

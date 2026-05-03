@@ -751,8 +751,10 @@ class ModelStorage:
         metadata['saved_at']   = datetime.now().isoformat()
         metadata['model_name'] = model_name
 
-        ts         = self._ts()
-        model_type = metadata.get('model_type', model_name)
+        ts          = self._ts()
+        model_type  = metadata.get('model_type', model_name)
+        data_source = metadata.get('data_source', '')
+        stamp_tag   = f"{model_type}_{data_source}" if data_source else model_type
 
         # ---- legacy "latest" files kept for InferenceEngine.load_model('latest') ----
         legacy_weights  = self.models_dir / f"{model_name}_weights.pkl"
@@ -781,8 +783,8 @@ class ModelStorage:
             json.dump(metadata, f, indent=2)
 
         # ---- timestamped copy ----
-        stamp_weights  = self.models_dir / f"model_{model_type}_{ts}.pkl"
-        stamp_metadata = self.models_dir / f"model_{model_type}_{ts}_metadata.json"
+        stamp_weights  = self.models_dir / f"model_{stamp_tag}_{ts}.pkl"
+        stamp_metadata = self.models_dir / f"model_{stamp_tag}_{ts}_metadata.json"
         with open(stamp_weights, 'wb') as f:
             pickle.dump(model_state_to_save if 'model_state_to_save' in locals() else model_state, f)
         with open(stamp_metadata, 'w') as f:
@@ -800,6 +802,18 @@ class ModelStorage:
         with open(path, 'w') as f:
             json.dump(payload, f, indent=2, default=str)
         print(f"Training stats saved  : {path}")
+        return path
+
+    def save_test_results(self, results: Dict[str, Any], model_type: str) -> Path:
+        """Persist held-out test-set evaluation results to ``test_results_<type>_<ts>.json``."""
+        ts   = self._ts()
+        path = self.graphs_dir / f"test_results_{model_type}_{ts}.json"
+        payload = dict(results)
+        payload['saved_at']   = datetime.now().isoformat()
+        payload['model_type'] = model_type
+        with open(path, 'w') as f:
+            json.dump(payload, f, indent=2, default=str)
+        print(f"Test results saved    : {path}")
         return path
 
     def save_training_graph(self, fig: Any, graph_type: str, model_type: str) -> Path:

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(Move-Item \"d:\\\\Diverse\\\\Facultate CSIE\\\\Cercetare\\\\Cercetare doctorat\\\\FINISHED\\\\Proiect 3 - Photo Categ App\\\\App Project\\\\ExampleImageFolder\\\\ML_Training_Data\\\\model_folder\\\\*\" \"d:\\\\Diverse\\\\Facultate CSIE\\\\Cercetare\\\\Cercetare doctorat\\\\FINISHED\\\\Proiect 3 - Photo Categ App\\\\App Project\\\\ML_Training_Data\\\\model_folder\\\\\")"
     ]
   }
 }

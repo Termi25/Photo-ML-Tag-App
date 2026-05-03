@@ -127,6 +127,14 @@ class TrainingProgressDialog:
         self.is_complete  = False
         self.is_cancelled = False
 
+        self.window.protocol('WM_DELETE_WINDOW', self._on_window_close)
+
+    def _on_window_close(self) -> None:
+        if self.is_complete or self.is_cancelled:
+            self.window.destroy()
+        else:
+            self._on_cancel()
+
     def _alive(self) -> bool:
         try:
             return bool(self.window.winfo_exists())
@@ -202,6 +210,105 @@ class TrainingProgressDialog:
         x = (self.window.winfo_screenwidth()  // 2) - 310
         y = (self.window.winfo_screenheight() // 2) - 215
         self.window.geometry(f'620x430+{x}+{y}')
+
+
+class SplashScreen:
+    """Startup loading screen — blocks all user interaction until the app is ready.
+
+    Shown as a borderless, centered Toplevel with grab_set() so nothing behind
+    it is reachable.  Call ``dismiss()`` on the UI thread to remove it.
+    """
+
+    _W, _H   = 440, 252
+    _BG      = '#1e1e2e'
+    _FG_HEAD = '#cdd6f4'
+    _FG_SUB  = '#89b4fa'
+    _FG_STEP = '#a6e3a1'
+    _FG_DIM  = '#6c7086'
+    _FG_BORD = '#313244'
+
+    def __init__(self, parent: tk.Tk) -> None:
+        self._parent    = parent
+        self._dismissed = False
+
+        win = tk.Toplevel(parent)
+        self.window = win
+        win.overrideredirect(True)
+        win.resizable(False, False)
+
+        # Centre over the parent window
+        parent.update_idletasks()
+        pw = parent.winfo_width()  or 1200
+        ph = parent.winfo_height() or 800
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        x  = px + (pw - self._W) // 2
+        y  = py + (ph - self._H) // 2
+        win.geometry(f'{self._W}x{self._H}+{x}+{y}')
+
+        # Outer border frame (single-pixel accent border)
+        border = tk.Frame(win, bg=self._FG_BORD, padx=1, pady=1)
+        border.pack(fill=tk.BOTH, expand=True)
+        inner = tk.Frame(border, bg=self._BG)
+        inner.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(inner, text='ML Image Sorter', bg=self._BG, fg=self._FG_HEAD,
+                 font=('Arial', 20, 'bold')).pack(pady=(26, 2))
+        tk.Label(inner, text='Supervised image categorisation with ML',
+                 bg=self._BG, fg=self._FG_SUB, font=('Arial', 9)).pack()
+
+        self._status_var = tk.StringVar(value='Starting…')
+        tk.Label(inner, textvariable=self._status_var,
+                 bg=self._BG, fg=self._FG_STEP,
+                 font=('Consolas', 9), wraplength=410,
+                 justify='center').pack(pady=(16, 8))
+
+        pb_wrap = tk.Frame(inner, bg=self._BG)
+        pb_wrap.pack(fill=tk.X, padx=32)
+        self._pb = ttk.Progressbar(pb_wrap, mode='indeterminate', length=376)
+        self._pb.pack(fill=tk.X)
+        self._pb.start(10)
+
+        tk.Label(inner, text='Please wait…',
+                 bg=self._BG, fg=self._FG_DIM, font=('Arial', 8)).pack(pady=(14, 0))
+
+        # Grab all pointer + keyboard input
+        win.grab_set()
+        win.lift()
+        try:
+            win.attributes('-topmost', True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+
+    def set_status(self, msg: str) -> None:
+        """Update the status line.  Must be called on the UI thread."""
+        if self._dismissed:
+            return
+        try:
+            self._status_var.set(msg)
+            self.window.update_idletasks()
+        except Exception:
+            pass
+
+    def dismiss(self) -> None:
+        """Release the grab and destroy the splash.  Call on the UI thread."""
+        if self._dismissed:
+            return
+        self._dismissed = True
+        try:
+            self._pb.stop()
+        except Exception:
+            pass
+        try:
+            self.window.grab_release()
+        except Exception:
+            pass
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
 
 
 class MoveProgressDialog:
@@ -751,7 +858,8 @@ class _TrainingState:
             elif kind == 'metrics':
                 self._metrics = value
             elif kind == 'detail':
-                self._details.append(str(value))
+                if len(self._details) < 500:
+                    self._details.append(str(value))
             elif kind in ('complete', 'error', 'cancelled'):
                 self._terminal = (kind, value)
 
@@ -779,9 +887,9 @@ class FileExplorer:
             self.current_path = default_folder
         else:
             self.current_path = Path.home()
-        # The root folder is the top-level folder the user opened.
-        # The shared database lives there; sub-folder navigation does NOT move it.
-        self.root_folder = self.current_path
+        # root_folder is fixed to the app directory so the DB and ML_Training_Data
+        # always land next to the source files, never inside a browsed image folder.
+        self.root_folder = Path(__file__).parent.parent
 
         # App state file (per-root) — stores preview snapshots and UI state
         self._app_state_path = self.root_folder / '.app_state.json'
@@ -946,6 +1054,8 @@ class FileExplorer:
     def _clear_simple_search(self) -> None:
         self._simple_search_var.set('')
         self._simple_search_results = []
+        for v in getattr(self, '_tag_matrix_vars', {}).values():
+            v.set(False)
         self.load_directory(self.current_path)
 
     def go_forward(self):
@@ -1128,7 +1238,6 @@ class FileExplorer:
         # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Change Directory", command=self.navigate_to_path)
         file_menu.add_command(label="Set Root Folder", command=self.set_root_folder_dialog)
         file_menu.add_separator()
         file_menu.add_command(label="Clean Orphan Databases", command=self.clean_orphan_databases_action)
@@ -1156,9 +1265,14 @@ class FileExplorer:
                 command=lambda t=_t: self.change_theme(t),
             )
 
-        # ML Control Panel will be placed inside its own tab below
+        # ── Always-visible navigation toolbar ────────────────────────────────
+        nav_toolbar = ttk.Frame(self.root)
+        nav_toolbar.pack(side=tk.TOP, fill=tk.X, padx=3, pady=(2, 0))
+        self._build_navigation_controls(nav_toolbar)
 
-        # Tabbed control strip (compact tabs)
+        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X, padx=3, pady=(1, 0))
+
+        # ── Tabbed control strip (Search / Advanced Search / View / ML) ───────
         style = ttk.Style()
         try:
             style.configure('Control.TNotebook.Tab', padding=(6, 2))
@@ -1167,7 +1281,7 @@ class FileExplorer:
         # Place the Notebook inside a container so we can resize it to the
         # active tab's needed height rather than sizing to the largest tab.
         control_tabs_container = ttk.Frame(self.root)
-        control_tabs_container.pack(side=tk.TOP, fill=tk.X, padx=3, pady=(2, 0))
+        control_tabs_container.pack(side=tk.TOP, fill=tk.X, padx=3, pady=(0, 0))
         # We'll control the container height explicitly when tabs change.
         control_tabs_container.pack_propagate(False)
 
@@ -1176,18 +1290,15 @@ class FileExplorer:
         self._control_tabs = control_tabs
         self._control_tabs_container = control_tabs_container
 
-        nav_tab = ttk.Frame(control_tabs)
-        simple_tab = ttk.Frame(control_tabs)
+        simple_tab   = ttk.Frame(control_tabs)
         advanced_tab = ttk.Frame(control_tabs)
-        view_tab = ttk.Frame(control_tabs)
-        ml_tab = ttk.Frame(control_tabs)
-        control_tabs.add(nav_tab, text='Navigate')
-        control_tabs.add(simple_tab, text='Search')
+        view_tab     = ttk.Frame(control_tabs)
+        ml_tab       = ttk.Frame(control_tabs)
+        control_tabs.add(simple_tab,   text='Search')
         control_tabs.add(advanced_tab, text='Advanced Search')
-        control_tabs.add(view_tab, text='View')
-        control_tabs.add(ml_tab, text='ML')
+        control_tabs.add(view_tab,     text='View')
+        control_tabs.add(ml_tab,       text='ML')
 
-        self._build_navigation_controls(nav_tab)
         self._build_simple_search_controls(simple_tab)
         self._build_search_bar(advanced_tab)
         self._build_view_options_bar(view_tab)
@@ -1332,6 +1443,29 @@ class FileExplorer:
         self.mode_dropdown.pack(fill=tk.X, pady=1)
         self.mode_dropdown.bind('<<ComboboxSelected>>', self.on_mode_change)
 
+        # Training Source
+        source_lf = ttk.LabelFrame(col_left, text="Training Source", padding=2)
+        source_lf.pack(fill=tk.X, pady=(4, 1))
+        self._train_source_var = tk.StringVar(value='folders')
+        ttk.Radiobutton(source_lf, text="Folders only", variable=self._train_source_var,
+                        value='folders', command=self._on_train_source_change).pack(anchor='w')
+        ttk.Radiobutton(source_lf, text="COCO only", variable=self._train_source_var,
+                        value='coco', command=self._on_train_source_change).pack(anchor='w')
+        ttk.Radiobutton(source_lf, text="Folders + COCO", variable=self._train_source_var,
+                        value='both', command=self._on_train_source_change).pack(anchor='w')
+
+        self._train_coco_settings = ttk.Frame(col_left)
+        coco_dir_row = ttk.Frame(self._train_coco_settings)
+        coco_dir_row.pack(fill=tk.X)
+        ttk.Label(coco_dir_row, text="COCO dir:", font=normal_font).pack(side=tk.LEFT)
+        self._train_coco_dir_var = tk.StringVar(
+            value=config_manager.app_config.coco_data_dir or './data/coco')
+        ttk.Entry(coco_dir_row, textvariable=self._train_coco_dir_var,
+                  font=normal_font).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        ttk.Button(coco_dir_row, text="…", width=3,
+                   command=self._browse_train_coco_dir).pack(side=tk.LEFT)
+        # Hidden until COCO is selected
+
         # Trained-model selection + auto-load toggle
         ttk.Label(col_left, text="Trained:", font=bold_font).pack(anchor='w', pady=(6, 0))
         trained_row = ttk.Frame(col_left)
@@ -1361,8 +1495,8 @@ class FileExplorer:
         
         ttk.Label(col_right, text="Actions:", font=bold_font).pack(anchor='w')
         
-        self.train_folders_btn = ttk.Button(col_right, text="📁 Train Folders", 
-                                           command=self.train_from_folders)
+        self.train_folders_btn = ttk.Button(col_right, text="Train",
+                                           command=self.train_from_source)
         self.train_folders_btn.pack(fill=tk.X, pady=1)
         
         self.train_tags_btn = ttk.Button(col_right, text="🏷️ Train Tags",
@@ -1517,7 +1651,19 @@ class FileExplorer:
             variable=self.auto_load_var,
             command=self._on_auto_load_toggle,
         ).pack(anchor='w', pady=1)
-        
+
+        ttk.Separator(col3, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+        self._coco_all_images_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(col3, text="All COCO images", variable=self._coco_all_images_var,
+                        command=self._on_coco_all_toggle).pack(anchor='w', pady=1)
+        self._coco_max_frame = ttk.Frame(col3)
+        ttk.Label(self._coco_max_frame, text="Max imgs:", font=advanced_font).pack(side=tk.LEFT)
+        self._coco_max_var = tk.IntVar(value=config_manager.app_config.coco_max_images or 500)
+        ttk.Spinbox(self._coco_max_frame, from_=50, to=5000, increment=50,
+                    textvariable=self._coco_max_var, width=7,
+                    font=advanced_font).pack(side=tk.LEFT, padx=2)
+        # Hidden until "All COCO images" is unchecked
+
         worker_frame = ttk.Frame(col3)
         worker_frame.pack(fill=tk.X, pady=1)
         ttk.Label(worker_frame, text="Workers:", font=advanced_font).pack(side=tk.LEFT)
@@ -1538,277 +1684,81 @@ class FileExplorer:
         params_grid.grid_columnconfigure(1, weight=1)
         params_grid.grid_columnconfigure(2, weight=1)
 
-        # ===== BENCHMARK SECTION =====
-        ttk.Separator(panel, orient=tk.HORIZONTAL).pack(fill=tk.X)
-        benchmark_outer = ttk.Frame(panel)
-        benchmark_outer.pack(side=tk.TOP, fill=tk.X)
-
-        benchmark_header = ttk.Frame(benchmark_outer)
-        benchmark_header.pack(fill=tk.X)
-        self._benchmark_expanded = tk.BooleanVar(value=False)
-        self._benchmark_toggle_btn = ttk.Button(
-            benchmark_header, text="▶ Benchmark",
-            command=self._toggle_benchmark_section)
-        self._benchmark_toggle_btn.pack(side=tk.LEFT, pady=1, padx=1)
-
-        self._benchmark_content = ttk.Frame(benchmark_outer)
-        # (collapsed by default — toggled in)
-
-        bm = self._benchmark_content
-        bm_font = ('Arial', 11)
-
-        # Dataset row
-        ds_row = ttk.Frame(bm)
-        ds_row.pack(fill=tk.X, padx=4, pady=(4, 1))
-        ttk.Label(ds_row, text="Dataset:", font=bm_font).pack(side=tk.LEFT)
-        self._bm_dataset_var = tk.StringVar(value='coco')
-        ttk.Radiobutton(ds_row, text="Personal folders", variable=self._bm_dataset_var,
-                        value='personal', command=self._on_bm_dataset_change).pack(side=tk.LEFT, padx=4)
-        ttk.Radiobutton(ds_row, text="COCO (val2017)", variable=self._bm_dataset_var,
-                        value='coco', command=self._on_bm_dataset_change).pack(side=tk.LEFT, padx=4)
-
-        # COCO-specific settings (shown only when COCO is selected)
-        self._bm_coco_frame = ttk.LabelFrame(bm, text="COCO Settings", padding=2)
-        self._bm_coco_frame.pack(fill=tk.X, padx=4, pady=2)
-
-        coco_dir_row = ttk.Frame(self._bm_coco_frame)
-        coco_dir_row.pack(fill=tk.X, pady=1)
-        ttk.Label(coco_dir_row, text="Data dir:", font=bm_font).pack(side=tk.LEFT)
-        self._bm_coco_dir_var = tk.StringVar(
-            value=config_manager.app_config.coco_data_dir or './data/coco')
-        ttk.Entry(coco_dir_row, textvariable=self._bm_coco_dir_var,
-                  font=bm_font).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
-        ttk.Button(coco_dir_row, text="…", width=3,
-                   command=self._browse_coco_dir).pack(side=tk.LEFT)
-
-        coco_max_row = ttk.Frame(self._bm_coco_frame)
-        coco_max_row.pack(fill=tk.X, pady=1)
-        ttk.Label(coco_max_row, text="Max images:", font=bm_font).pack(side=tk.LEFT)
-        self._bm_coco_max_var = tk.IntVar(
-            value=config_manager.app_config.coco_max_images or 500)
-        ttk.Spinbox(coco_max_row, from_=50, to=5000, increment=50,
-                    textvariable=self._bm_coco_max_var, width=7,
-                    font=bm_font).pack(side=tk.LEFT, padx=2)
-        ttk.Label(coco_max_row,
-                  text="(annotations auto-downloaded from cocodataset.org)",
-                  font=('Arial', 9), foreground='gray').pack(side=tk.LEFT, padx=4)
-
-        # Model comparison checkboxes
-        model_cmp_frame = ttk.LabelFrame(bm, text="Compare models", padding=2)
-        model_cmp_frame.pack(fill=tk.X, padx=4, pady=2)
-        self._bm_model_vars: Dict[str, tk.BooleanVar] = {}
-        _model_row = ttk.Frame(model_cmp_frame)
-        _model_row.pack(fill=tk.X)
-        for i, mt in enumerate(['resnet18', 'resnet34', 'efficientnet_b0',
-                                 'efficientnet_b1', 'mobilenet_v2', 'vgg16']):
-            var = tk.BooleanVar(value=(mt == 'resnet18'))
-            self._bm_model_vars[mt] = var
-            ttk.Checkbutton(_model_row, text=mt, variable=var).grid(
-                row=i // 3, column=i % 3, sticky='w', padx=4, pady=1)
-
-        # Test split and run button
-        split_row = ttk.Frame(bm)
-        split_row.pack(fill=tk.X, padx=4, pady=(2, 1))
-        ttk.Label(split_row, text="Test split:", font=bm_font).pack(side=tk.LEFT)
-        self._bm_test_split_var = tk.DoubleVar(value=0.15)
-        ttk.Spinbox(split_row, from_=0.0, to=0.4, increment=0.05,
-                    textvariable=self._bm_test_split_var, width=6,
-                    format='%.2f', font=bm_font).pack(side=tk.LEFT, padx=2)
-        ttk.Label(split_row, text="(0 = no held-out test set)",
-                  font=('Arial', 9), foreground='gray').pack(side=tk.LEFT, padx=4)
-
-        ttk.Button(bm, text="▶ Run Benchmark",
-                   command=self._run_benchmark).pack(fill=tk.X, padx=4, pady=(4, 2))
-
         # Initial population (may update later once root folder is set)
         try:
             self._refresh_trained_models_async()
         except Exception:
             pass
 
-    def _toggle_benchmark_section(self):
-        if self._benchmark_expanded.get():
-            self._benchmark_content.pack_forget()
-            self._benchmark_toggle_btn.config(text="▶ Benchmark")
-            self._benchmark_expanded.set(False)
+    def _on_train_source_change(self):
+        if self._train_source_var.get() in ('coco', 'both'):
+            self._train_coco_settings.pack(fill=tk.X, pady=(2, 0))
         else:
-            self._benchmark_content.pack(fill=tk.X)
-            self._benchmark_toggle_btn.config(text="▼ Benchmark")
-            self._benchmark_expanded.set(True)
+            self._train_coco_settings.pack_forget()
 
-    def _on_bm_dataset_change(self):
-        if self._bm_dataset_var.get() == 'coco':
-            self._bm_coco_frame.pack(fill=tk.X, padx=4, pady=2)
-        else:
-            self._bm_coco_frame.pack_forget()
-
-    def _browse_coco_dir(self):
+    def _browse_train_coco_dir(self):
         from tkinter import filedialog
         folder = filedialog.askdirectory(
             title="Select COCO data directory",
-            initialdir=self._bm_coco_dir_var.get())
+            initialdir=self._train_coco_dir_var.get())
         if folder:
-            self._bm_coco_dir_var.set(folder)
+            self._train_coco_dir_var.set(folder)
 
-    def _run_benchmark(self):
-        """Launch the benchmark in a background thread with a progress dialog."""
-        dataset     = self._bm_dataset_var.get()
-        model_types = [mt for mt, var in self._bm_model_vars.items() if var.get()]
-        test_split  = float(self._bm_test_split_var.get())
+    def _on_coco_all_toggle(self):
+        if self._coco_all_images_var.get():
+            self._coco_max_frame.pack_forget()
+        else:
+            self._coco_max_frame.pack(fill=tk.X, pady=1)
 
-        if not model_types:
-            messagebox.showwarning("Benchmark", "Select at least one model to compare.")
+    def train_from_source(self):
+        source = self._train_source_var.get()
+        label = {'folders': 'Folders', 'coco': 'COCO', 'both': 'Folders + COCO'}[source]
+        if not messagebox.askyesno("Confirm",
+                f"This will train a new model using {label} as the data source. Continue?"):
             return
 
-        coco_dir   = self._bm_coco_dir_var.get().strip() or './data/coco'
-        coco_max   = int(self._bm_coco_max_var.get())
+        coco_dir = self._train_coco_dir_var.get().strip() or './data/coco'
+        use_all = self._coco_all_images_var.get()
+        coco_max = 0 if use_all else int(self._coco_max_var.get())
 
-        if dataset == 'coco':
-            config_manager.app_config.coco_data_dir   = coco_dir
-            config_manager.app_config.coco_max_images = coco_max
+        if source in ('coco', 'both'):
+            config_manager.app_config.coco_data_dir = coco_dir
+            if not use_all:
+                config_manager.app_config.coco_max_images = coco_max
             config_manager.save_config()
 
-        # Build progress dialog (intentionally non-modal; avoid grab_set)
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Benchmark Progress")
-        dlg.geometry("640x420")
-        dlg.resizable(True, True)
-        dlg.transient(self.root)
-
-        ttk.Label(dlg, text="Benchmark", font=('Arial', 13, 'bold')).pack(pady=(10, 2))
-        status_var = tk.StringVar(value="Starting…")
-        ttk.Label(dlg, textvariable=status_var, wraplength=600,
-                  font=('Arial', 11)).pack(padx=10)
-
-        progress_var = tk.DoubleVar(value=0)
-        ttk.Progressbar(dlg, variable=progress_var, maximum=100,
-                        length=600).pack(padx=10, pady=4)
-
-        log_frame = ttk.Frame(dlg)
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
-        log_sb = ttk.Scrollbar(log_frame)
-        log_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        log_text = tk.Text(log_frame, height=14, font=('Courier', 9),
-                           yscrollcommand=log_sb.set, state='disabled')
-        log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        log_sb.config(command=log_text.yview)
-
-        close_btn = ttk.Button(dlg, text="Close", state='disabled',
-                               command=dlg.destroy)
-        close_btn.pack(pady=(2, 8))
-
-        # Buffer UI updates to avoid flooding Tk with thousands of after(0) calls.
         state = _TrainingState()
-        _MAX_BENCH_LOG_LINES = 400
-        log_line_count = 0
+        progress_dialog = TrainingProgressDialog(
+            self.root, f"Training from {label}",
+            cancel_callback=lambda: self.controller.training_manager.cancel())
+        progress_dialog.show()
 
-        def _append_lines(lines: list[str]) -> None:
-            nonlocal log_line_count
-            if not lines:
-                return
+        def on_complete():
+            self.status_var.set("Training completed successfully")
+            self.model_status_label.config(
+                text=f"✓ Model trained & loaded ({config_manager.app_config.model_type})",
+                foreground='green')
             try:
-                log_text.config(state='normal')
-                for line in lines:
-                    log_text.insert(tk.END, str(line) + '\n')
-                log_line_count += len(lines)
-                if log_line_count > _MAX_BENCH_LOG_LINES:
-                    excess = log_line_count - _MAX_BENCH_LOG_LINES
-                    log_text.delete('1.0', f"{excess + 1}.0")
-                    log_line_count = _MAX_BENCH_LOG_LINES
-            finally:
-                log_text.config(state='disabled')
+                self._refresh_trained_models_async()
+            except Exception:
+                pass
 
-        def _poll() -> None:
-            if not dlg.winfo_exists():
-                return
-            status, progress, _metrics, details, terminal = state.drain()
-            if status:
-                status_var.set(status)
-            if progress is not None:
-                try:
-                    progress_var.set(min(100, float(progress)))
-                except Exception:
-                    pass
-            if details:
-                _append_lines(details)
-                try:
-                    log_text.see(tk.END)
-                except Exception:
-                    pass
-            if terminal:
-                kind, val = terminal
-                if kind == 'complete':
-                    status_var.set('Benchmark complete.')
-                    progress_var.set(100)
-                    _append_lines(['', '=== Benchmark finished ==='])
-                    close_btn.config(state='normal')
-                elif kind == 'error':
-                    status_var.set(f"Error: {val}")
-                    _append_lines([f"ERROR: {val}"])
-                    close_btn.config(state='normal')
+        self.controller.training_manager.progress_callback = state.push
+        state.push('status', 'Initializing training...')
+
+        def _run():
+            try:
+                if source == 'folders':
+                    self.controller.bootstrap_from_folders()
+                elif source == 'coco':
+                    self.controller.bootstrap_from_coco(coco_dir=coco_dir, coco_max=coco_max)
                 else:
-                    close_btn.config(state='normal')
-                return
-            self.root.after(150, _poll)
-
-        def _callback(event, value):
-            if event == 'status':
-                state.push('status', str(value))
-                state.push('detail', str(value))
-            elif event == 'detail':
-                state.push('detail', f"  {value}")
-            elif event == 'progress':
-                state.push('progress', value)
-            elif event == 'complete':
-                state.push('complete', True)
-
-        def _worker():
-            try:
-                from metrics import BenchmarkRunner, MetricsCollector
-                runner = BenchmarkRunner(self.controller, MetricsCollector())
-                import sys
-
-                class _StreamForwarder:
-                    def __init__(self, post_fn, prefix: str = ''):
-                        self.post_fn = post_fn
-                        self.prefix = prefix
-
-                    def write(self, s: str) -> None:
-                        if not s:
-                            return
-                        # Split on lines and post each non-empty line
-                        for line in s.splitlines():
-                            if line.strip():
-                                try:
-                                    self.post_fn(f"{self.prefix}{line}")
-                                except Exception:
-                                    pass
-
-                    def flush(self) -> None:
-                        return
-
-                old_stdout, old_stderr = sys.stdout, sys.stderr
-                sys.stdout = _StreamForwarder(lambda l: state.push('detail', l))
-                sys.stderr = _StreamForwarder(lambda l: state.push('detail', f"ERROR: {l}"), prefix='')
-                try:
-                    runner.run_full_benchmark(
-                        dataset=dataset,
-                        model_types=model_types,
-                        test_split=test_split,
-                        coco_data_dir=coco_dir if dataset == 'coco' else None,
-                        coco_max_images=coco_max if dataset == 'coco' else None,
-                        progress_callback=_callback,
-                    )
-                    # Ensure UI becomes closable even if the runner didn't emit 'complete'.
-                    state.push('complete', True)
-                finally:
-                    sys.stdout = old_stdout
-                    sys.stderr = old_stderr
+                    self.controller.bootstrap_from_both(coco_dir=coco_dir, coco_max=coco_max)
             except Exception as e:
                 state.push('error', str(e))
 
-        threading.Thread(target=_worker, daemon=True).start()
-        self.root.after(50, _poll)
+        threading.Thread(target=_run, daemon=True).start()
+        self.root.after(150, self._make_training_poll(state, progress_dialog, on_complete))
 
     def on_model_change(self, event=None):
         """Handle model selection change"""
@@ -2128,17 +2078,37 @@ class FileExplorer:
     def _populate_nav_tree(self) -> None:
         self.nav_tree.delete(*self.nav_tree.get_children())
         if platform.system() == 'Windows':
+            drives: list[str] = []
             for letter in string.ascii_uppercase:
                 drive = f"{letter}:\\"
                 if os.path.exists(drive):
-                    try:
-                        _, _, free = self.get_drive_space(drive)
-                        label = f"{drive}  ({self.format_size(free)} free)"
-                    except Exception:
-                        label = drive
-                    iid = self.nav_tree.insert('', 'end', iid=drive, text=label,
+                    drives.append(drive)
+                    # Insert immediately with bare label; free-space label is filled in async
+                    iid = self.nav_tree.insert('', 'end', iid=drive, text=drive,
                                                values=(drive,), open=False)
                     self.nav_tree.insert(iid, 'end', text='_loading_')
+
+            def _fetch_labels() -> None:
+                labels: dict[str, str] = {}
+                for d in drives:
+                    try:
+                        _, _, free = self.get_drive_space(d)
+                        labels[d] = f"{d}  ({self.format_size(free)} free)"
+                    except Exception:
+                        labels[d] = d
+
+                def _apply() -> None:
+                    for d, lbl in labels.items():
+                        try:
+                            self.nav_tree.item(d, text=lbl)
+                        except Exception:
+                            pass
+                try:
+                    self.root.after(0, _apply)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_fetch_labels, daemon=True).start()
         else:
             for root_path in ('/', '/home', '/media', '/mnt', '/Volumes'):
                 if os.path.exists(root_path):
@@ -2153,22 +2123,48 @@ class FileExplorer:
             self.nav_tree.delete(children[0])
             vals = self.nav_tree.item(item, 'values')
             path_str = vals[0] if vals else self.nav_tree.item(item, 'text')
-            try:
-                path = Path(path_str)
-                for entry in sorted(os.scandir(path), key=lambda e: e.name.lower()):
-                    if entry.is_dir(follow_symlinks=False) and not entry.name.startswith('.') and entry.name.lower() != _THUMBS_FOLDER:
+
+            def _scan() -> None:
+                entries: list[tuple[str, str]] = []
+                try:
+                    path = Path(path_str)
+                    for entry in sorted(os.scandir(path), key=lambda e: e.name.lower()):
+                        if (entry.is_dir(follow_symlinks=False)
+                                and not entry.name.startswith('.')
+                                and entry.name.lower() != _THUMBS_FOLDER):
+                            try:
+                                if not self._is_os_hidden_entry(entry):
+                                    entries.append((entry.name, entry.path))
+                            except PermissionError:
+                                pass
+                except Exception:
+                    pass
+
+                def _apply() -> None:
+                    try:
+                        if not self.nav_tree.exists(item):
+                            return
+                    except Exception:
+                        return
+                    for name, path_s in entries:
                         try:
-                            if not self._is_os_hidden_entry(entry):
-                                ciid = self.nav_tree.insert(
-                                    item, 'end', text=entry.name,
-                                    values=(entry.path,), open=False)
-                                self.nav_tree.insert(ciid, 'end', text='_loading_')
-                        except PermissionError:
+                            ciid = self.nav_tree.insert(
+                                item, 'end', text=name,
+                                values=(path_s,), open=False)
+                            self.nav_tree.insert(ciid, 'end', text='_loading_')
+                        except Exception:
                             pass
-            except Exception:
-                pass
+
+                try:
+                    self.root.after(0, _apply)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_scan, daemon=True).start()
 
     def _on_nav_tree_select(self, *_) -> None:
+        if getattr(self, '_nav_tree_revealing', False):
+            return   # selection set programmatically — don't navigate
         item = self.nav_tree.focus()
         if not item:
             return
@@ -2182,7 +2178,80 @@ class FileExplorer:
                 self.load_directory(path)
         except Exception:
             pass
-    
+
+    def _nav_tree_expand_sync(self, iid: str) -> None:
+        """Synchronously expand one nav-tree node (used during path reveal)."""
+        children = self.nav_tree.get_children(iid)
+        if len(children) == 1 and self.nav_tree.item(children[0], 'text') == '_loading_':
+            self.nav_tree.delete(children[0])
+            vals = self.nav_tree.item(iid, 'values')
+            path_str = vals[0] if vals else self.nav_tree.item(iid, 'text')
+            try:
+                for entry in sorted(os.scandir(path_str), key=lambda e: e.name.lower()):
+                    if (entry.is_dir(follow_symlinks=False)
+                            and not entry.name.startswith('.')
+                            and entry.name.lower() != _THUMBS_FOLDER):
+                        try:
+                            if not self._is_os_hidden_entry(entry):
+                                ciid = self.nav_tree.insert(
+                                    iid, 'end', text=entry.name,
+                                    values=(entry.path,), open=False)
+                                self.nav_tree.insert(ciid, 'end', text='_loading_')
+                        except PermissionError:
+                            pass
+            except Exception:
+                pass
+        try:
+            self.nav_tree.item(iid, open=True)
+        except Exception:
+            pass
+
+    def _nav_tree_reveal_path(self, target: Path) -> None:
+        """Expand the side nav tree to *target* and select it.
+
+        Only walks the path components that correspond to *target*, so the
+        synchronous scandir calls are limited to the depth of the target path
+        rather than the whole drive.
+        """
+        try:
+            target = target.resolve()
+            parts = list(target.parts)   # e.g. ['D:\\', 'Projects', 'App']
+            if not parts:
+                return
+
+            root_iid = parts[0]          # 'D:\\' on Windows, '/' on Unix
+            if not self.nav_tree.exists(root_iid):
+                return
+
+            self._nav_tree_expand_sync(root_iid)
+            current_iid = root_iid
+
+            for depth, part in enumerate(parts[1:], start=1):
+                partial = str(Path(*parts[:depth + 1]))
+                found: str | None = None
+                for child_iid in self.nav_tree.get_children(current_iid):
+                    child_vals = self.nav_tree.item(child_iid, 'values')
+                    if child_vals and Path(child_vals[0]) == Path(partial):
+                        found = child_iid
+                        break
+                if found is None:
+                    break
+                # Only expand intermediate nodes (don't expand the leaf)
+                if depth < len(parts) - 1:
+                    self._nav_tree_expand_sync(found)
+                current_iid = found
+
+            try:
+                self._nav_tree_revealing = True
+                self.nav_tree.selection_set(current_iid)
+                self.nav_tree.see(current_iid)
+            except Exception:
+                pass
+            finally:
+                self._nav_tree_revealing = False
+        except Exception:
+            self._nav_tree_revealing = False
+
     def get_drive_space(self, drive):
         """Get drive space information"""
         if platform.system() == 'Windows':
@@ -2489,6 +2558,21 @@ class FileExplorer:
 
             self.status_var.set(f"{len(folders)} folders, {len(files)} files")
 
+            # Keep side nav tree in sync with the current path
+            try:
+                self._nav_tree_reveal_path(path)
+            except Exception:
+                pass
+
+            # Fire one-shot startup hook so the splash knows the dir is loaded
+            _hook = getattr(self, '_startup_dir_done_callback', None)
+            if _hook is not None:
+                self._startup_dir_done_callback = None
+                try:
+                    _hook()
+                except Exception:
+                    pass
+
         threading.Thread(target=_enumerate, daemon=True).start()
         ui_dt = (time.time() - ui_start)
         if ui_dt > 0.05:
@@ -2524,16 +2608,165 @@ class FileExplorer:
 
     def _build_simple_search_controls(self, parent):
         outer = ttk.Frame(parent)
-        outer.pack(fill=tk.X, padx=4, pady=4)
+        outer.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        ttk.Label(outer, text='Filename search:', font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=(0, 4))
+        # ── filename row ─────────────────────────────────────────────────
+        name_row = ttk.Frame(outer)
+        name_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(name_row, text='Filename:', font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=(0, 4))
         self._simple_search_var = tk.StringVar(value=self._ui_state.get('simple_search', ''))
-        entry = ttk.Entry(outer, textvariable=self._simple_search_var, width=34)
+        entry = ttk.Entry(name_row, textvariable=self._simple_search_var, width=28)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
-        entry.bind('<Return>', lambda _e: self._search_files_by_name_async())
+        entry.bind('<Return>', lambda _e: self._simple_search_run())
+        ttk.Button(name_row, text='Search', command=self._simple_search_run).pack(side=tk.LEFT, padx=2)
+        ttk.Button(name_row, text='Clear',  command=self._clear_simple_search).pack(side=tk.LEFT, padx=2)
 
-        ttk.Button(outer, text='Search', command=self._search_files_by_name_async).pack(side=tk.LEFT, padx=2)
-        ttk.Button(outer, text='Clear', command=self._clear_simple_search).pack(side=tk.LEFT, padx=2)
+        # ── tag matrix header ─────────────────────────────────────────────
+        hdr = ttk.Frame(outer)
+        hdr.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(hdr, text='Filter by tag:', font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
+        ttk.Button(hdr, text='All',  width=4,
+                   command=self._tag_matrix_select_all).pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Button(hdr, text='None', width=4,
+                   command=self._tag_matrix_deselect_all).pack(side=tk.LEFT, padx=2)
+        ttk.Button(hdr, text='↺', width=3,
+                   command=self._tag_matrix_refresh).pack(side=tk.LEFT, padx=2)
+
+        # ── scrollable checkbox grid ───────────────────────────────────────
+        matrix_outer = ttk.Frame(outer, relief='groove', borderwidth=1)
+        matrix_outer.pack(fill=tk.BOTH, expand=True)
+        self._tag_matrix_canvas = tk.Canvas(matrix_outer, highlightthickness=0)
+        _sb = ttk.Scrollbar(matrix_outer, orient='vertical',
+                            command=self._tag_matrix_canvas.yview)
+        self._tag_matrix_canvas.configure(yscrollcommand=_sb.set)
+        _sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._tag_matrix_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._tag_matrix_inner = ttk.Frame(self._tag_matrix_canvas)
+        self._tag_matrix_win_id = self._tag_matrix_canvas.create_window(
+            (0, 0), window=self._tag_matrix_inner, anchor='nw')
+        self._tag_matrix_inner.bind(
+            '<Configure>',
+            lambda _e: self._tag_matrix_canvas.configure(
+                scrollregion=self._tag_matrix_canvas.bbox('all')))
+        self._tag_matrix_canvas.bind(
+            '<Configure>',
+            lambda e: self._tag_matrix_canvas.itemconfig(
+                self._tag_matrix_win_id, width=e.width))
+
+        self._tag_matrix_vars: dict = {}
+        self._tag_matrix_refresh()
+
+    # ------------------------------------------------------------------
+    # Tag-matrix helpers (Search tab)
+    # ------------------------------------------------------------------
+
+    def _tag_matrix_refresh(self) -> None:
+        """Reload all tags from DB and rebuild the checkbox grid (async)."""
+        def _worker() -> None:
+            try:
+                tags = [r['tag_name'] for r in metadata_store.get_all_tags()]
+            except Exception:
+                tags = []
+            try:
+                self.root.after(0, lambda: self._tag_matrix_populate(tags))
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _tag_matrix_populate(self, tags: list) -> None:
+        """Rebuild checkbox grid from *tags*, preserving existing selections."""
+        try:
+            inner = self._tag_matrix_inner
+        except AttributeError:
+            return
+        for w in inner.winfo_children():
+            w.destroy()
+        prev = {t: v.get() for t, v in self._tag_matrix_vars.items()}
+        self._tag_matrix_vars = {}
+        cols = 3
+        for i, tag in enumerate(tags):
+            row, col = divmod(i, cols)
+            var = tk.BooleanVar(value=prev.get(tag, False))
+            cb = ttk.Checkbutton(inner, text=tag, variable=var,
+                                 command=self._simple_search_run)
+            cb.grid(row=row, column=col, sticky='w', padx=6, pady=1)
+            self._tag_matrix_vars[tag] = var
+        try:
+            inner.update_idletasks()
+            self._tag_matrix_canvas.configure(
+                scrollregion=self._tag_matrix_canvas.bbox('all'))
+        except Exception:
+            pass
+
+    def _tag_matrix_select_all(self) -> None:
+        for v in self._tag_matrix_vars.values():
+            v.set(True)
+        self._simple_search_run()
+
+    def _tag_matrix_deselect_all(self) -> None:
+        for v in self._tag_matrix_vars.values():
+            v.set(False)
+        self._simple_search_run()
+
+    def _simple_search_run(self) -> None:
+        """Execute combined filename + tag-filter search."""
+        filename_q = getattr(self, '_simple_search_var',
+                             tk.StringVar()).get().strip().lower()
+        included_tags = [t for t, v in getattr(self, '_tag_matrix_vars', {}).items()
+                         if v.get()]
+
+        if not filename_q and not included_tags:
+            self._clear_simple_search()
+            return
+
+        base = self.current_path
+        current_gen = self._nav_generation
+
+        def _worker() -> None:
+            results: list = []
+            try:
+                if included_tags:
+                    rows = metadata_store.search_images_advanced(
+                        included_tags, [], sort_by='name', sort_asc=True)
+                    paths = [Path(r['file_path']) for r in rows
+                             if Path(r['file_path']).exists()]
+                    if filename_q:
+                        paths = [p for p in paths if filename_q in p.name.lower()]
+                    results = paths
+                else:
+                    for p in base.rglob('*'):
+                        if self._nav_generation != current_gen:
+                            return
+                        if (p.is_file()
+                                and not p.name.startswith('.')
+                                and not any(part.lower() == _THUMBS_FOLDER
+                                            for part in p.relative_to(base).parts)
+                                and p.suffix.lower() in self._IMAGE_EXTS
+                                and filename_q in p.name.lower()):
+                            results.append(p)
+            except Exception:
+                results = []
+
+            def _show() -> None:
+                if self._nav_generation != current_gen:
+                    return
+                self._simple_search_results = results
+                self._search_mode_var.set('simple')
+                tag_info = (f'  [{len(included_tags)} tag(s)]'
+                            if included_tags else '')
+                self.status_var.set(
+                    f'Search{tag_info}: {len(results)} result(s)')
+                if self.view_mode == 'detailed':
+                    self.load_detailed_view([], results)
+                else:
+                    self.load_icons_view([], results)
+
+            try:
+                self.root.after(0, _show)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _build_view_options_bar(self, parent=None):
         """View tab controls: recompile previews plus gallery/detail toggles."""
@@ -2558,6 +2791,17 @@ class FileExplorer:
         self._recompile_previews_btn = ttk.Button(header, text='Recompile Previews',
                                                   command=self._recompile_previews_from_current_path)
         self._recompile_previews_btn.pack(side=tk.RIGHT, padx=(8, 4))
+
+        ttk.Separator(header, orient=tk.VERTICAL).pack(side=tk.RIGHT, fill=tk.Y, padx=6)
+
+        # View Metrics button — surfaces what was only accessible via View menu
+        ttk.Button(header, text='Metrics', width=8,
+                   command=self.show_metrics).pack(side=tk.RIGHT, padx=(0, 4))
+
+        # Show hidden items toggle — surfaces what was only accessible via View menu
+        ttk.Checkbutton(header, text='Show Hidden',
+                        variable=self.show_hidden_var,
+                        command=self.refresh).pack(side=tk.LEFT, padx=(4, 8))
 
         # Gallery image height slider (inline with header controls)
         self._zoom_var = tk.IntVar(value=self._view_zoom_override or 140)
@@ -2634,7 +2878,6 @@ class FileExplorer:
             except Exception:
                 tab_text = ''
             min_map = {
-                'Navigate': 72,
                 'Search': 84,
                 'Advanced Search': 140,
                 'View': 84,
@@ -2718,41 +2961,40 @@ class FileExplorer:
     # ------------------------------------------------------------------
 
     def _build_search_bar(self, parent=None):
-        """Build the MangaDex-style tag-filter bar below the navigation toolbar."""
+        """Advanced tag-search bar with a single-canvas chip palette."""
         if parent is None:
             parent = self.root
         outer = ttk.Frame(parent, relief='groove', borderwidth=1)
         outer.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 2))
         self._search_bar_frame = outer
 
-        # \u2500\u2500 Row 1: input + sort + buttons \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        # Row 1: tag-name entry + autocomplete + sort + action buttons
         row1 = ttk.Frame(outer)
         row1.pack(fill=tk.X, padx=4, pady=(3, 1))
 
-        ttk.Label(row1, text='\ud83d\udd0d', font=('Arial', 11)).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(row1, text='🔍', font=('Arial', 11)).pack(side=tk.LEFT, padx=(0, 4))
 
         self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(row1, textvariable=self.search_var, width=30,
+        self.search_entry = ttk.Entry(row1, textvariable=self.search_var, width=28,
                                       font=('Arial', 10))
         self.search_entry.pack(side=tk.LEFT, padx=(0, 4))
         self.search_entry.bind('<Return>', lambda e: self._commit_search_token())
         self.search_entry.bind('<Escape>', lambda e: self._hide_tag_suggestions())
         self.search_var.trace_add('write', self._on_search_entry_change)
 
-        ttk.Button(row1, text='Add tag \u21b5',
+        ttk.Button(row1, text='Add tag ↵',
                    command=self._commit_search_token).pack(side=tk.LEFT, padx=2)
 
         ttk.Separator(row1, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
 
-        # Sort controls
         ttk.Label(row1, text='Sort:', font=('Arial', 9)).pack(side=tk.LEFT)
         self._sort_var = tk.StringVar(value='name')
-        sort_cb = ttk.Combobox(row1, textvariable=self._sort_var, width=8, state='readonly',
-                               values=['name', 'date', 'size'], font=('Arial', 9))
-        sort_cb.pack(side=tk.LEFT, padx=2)
+        ttk.Combobox(row1, textvariable=self._sort_var, width=8, state='readonly',
+                     values=['name', 'date', 'size'],
+                     font=('Arial', 9)).pack(side=tk.LEFT, padx=2)
 
         self._sort_asc_var = tk.BooleanVar(value=True)
-        self._sort_dir_btn = ttk.Button(row1, text='\u2191 Asc', width=6,
+        self._sort_dir_btn = ttk.Button(row1, text='↑ Asc', width=6,
                                         command=self._toggle_sort_dir)
         self._sort_dir_btn.pack(side=tk.LEFT, padx=2)
 
@@ -2760,133 +3002,205 @@ class FileExplorer:
 
         ttk.Button(row1, text='Search',
                    command=self.perform_tag_search).pack(side=tk.LEFT, padx=2)
-        self.search_clear_btn = ttk.Button(row1, text='\u2715 Clear',
+        self.search_clear_btn = ttk.Button(row1, text='✕ Clear',
                                            command=self.clear_search, state=tk.DISABLED)
         self.search_clear_btn.pack(side=tk.LEFT, padx=2)
 
         self.search_status_label = ttk.Label(
-            row1, text='Add tags \u2192 click chip to toggle include / exclude',
+            row1, text='Click tag = include  ·  again = exclude  ·  again = clear',
             foreground='gray', font=('Arial', 9))
         self.search_status_label.pack(side=tk.LEFT, padx=(10, 0))
 
-        # \u2500\u2500 Row 2: active tag chips \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        # Row 2: palette filter entry + color legend
         row2 = ttk.Frame(outer)
-        row2.pack(fill=tk.X, padx=4, pady=(0, 3))
-        self._chips_row = row2                  # chips are packed inside here
+        row2.pack(fill=tk.X, padx=4, pady=(2, 3))
+
+        ttk.Label(row2, text='Filter:', font=('Arial', 9)).pack(side=tk.LEFT, padx=(0, 3))
+        self._tag_filter_var = tk.StringVar()
+        ttk.Entry(row2, textvariable=self._tag_filter_var, width=24,
+                  font=('Arial', 9)).pack(side=tk.LEFT)
+        self._tag_filter_var.trace_add('write', lambda *_: self._schedule_palette_redraw())
+
+        ttk.Button(row2, text='Refresh', width=8,
+                   command=self._refresh_advanced_tag_sources).pack(side=tk.LEFT, padx=(8, 0))
+
+        legend = ttk.Frame(row2)
+        legend.pack(side=tk.RIGHT, padx=(0, 4))
+        for _lc, _ll in (('#e8851a', 'Include'), ('#c62828', 'Exclude')):
+            tk.Frame(legend, bg=_lc, width=12, height=12).pack(side=tk.LEFT, padx=(8, 2))
+            ttk.Label(legend, text=_ll, font=('Arial', 8)).pack(side=tk.LEFT)
+
+        # Canvas palette — all chips drawn as primitives on one canvas
+        palette_outer = ttk.Frame(outer)
+        palette_outer.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
+
+        self._palette_canvas = tk.Canvas(palette_outer, bg='#fafafa',
+                                          highlightthickness=0, relief='flat')
+        _pal_vsb = ttk.Scrollbar(palette_outer, orient='vertical',
+                                  command=self._palette_canvas.yview)
+        self._palette_canvas.configure(yscrollcommand=_pal_vsb.set)
+        _pal_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._palette_canvas.bind('<Configure>',
+                                   lambda _e: self._schedule_palette_redraw())
+        self._palette_canvas.bind('<Button-1>', self._on_palette_click)
+        self._palette_canvas.bind(
+            '<MouseWheel>',
+            lambda e: self._palette_canvas.yview_scroll(-1 * (e.delta // 120), 'units'))
+        self._palette_canvas.bind(
+            '<Button-4>', lambda _e: self._palette_canvas.yview_scroll(-1, 'units'))
+        self._palette_canvas.bind(
+            '<Button-5>', lambda _e: self._palette_canvas.yview_scroll(1, 'units'))
 
         # Internal state
-        # _tag_states: {tag_name: '+' (include) | '-' (exclude)}
-        self._tag_states:         dict = {}
-        self._search_active       = False
-        self._last_search_results: list = []
-        self._suggest_popup:       tk.Toplevel | None = None  # type: ignore[assignment]
-        # Create a hidden listbox to avoid None checks for static analysis
+        self._tag_states:           dict   = {}
+        self._palette_all_tags:     list   = []
+        self._palette_chip_regions: list   = []
+        self._palette_redraw_job:   object = None
+        self._palette_font_obj:     object = None
+        self._search_active:        bool   = False
+        self._last_search_results:  list   = []
+
+        self._suggest_popup:   tk.Toplevel | None = None  # type: ignore[assignment]
         try:
             lbox = tk.Listbox(self.root)
             lbox.pack_forget()
         except Exception:
             lbox = None
-        self._suggest_listbox:     tk.Listbox  | None = lbox  # type: ignore[assignment]
+        self._suggest_listbox: tk.Listbox | None = lbox  # type: ignore[assignment]
 
-        # Advanced tag sources (all tags + folder-grouped view)
-        self._tag_display_mode_var = tk.StringVar(value=self._ui_state.get('tag_display_mode', 'list'))
-        mode_row = ttk.Frame(outer)
-        mode_row.pack(fill=tk.X, padx=4, pady=(0, 4))
-        ttk.Label(mode_row, text='Tag source:', font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
-        ttk.Combobox(mode_row, textvariable=self._tag_display_mode_var,
-                 values=['list', 'folder'], state='readonly', width=10).pack(side=tk.LEFT, padx=4)
-        ttk.Button(mode_row, text='Refresh sources', command=self._refresh_advanced_tag_sources).pack(side=tk.LEFT, padx=2)
-
-        source_tabs = ttk.Notebook(outer)
-        source_tabs.pack(fill=tk.BOTH, expand=True, padx=2, pady=(0, 4))
-        self._advanced_source_tabs = source_tabs
-
-        all_tab = ttk.Frame(source_tabs)
-        folder_tab = ttk.Frame(source_tabs)
-        source_tabs.add(all_tab, text='All Tags')
-        source_tabs.add(folder_tab, text='Folder Tree')
-
-        self._build_all_tags_panel(all_tab)
-        self._build_folder_tags_panel(folder_tab)
         self._refresh_advanced_tag_sources()
 
-    def _build_all_tags_panel(self, parent):
-        frame = ttk.Frame(parent)
-        frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        ttk.Label(frame, text='All tags (double-click to include):', font=('Arial', 9, 'bold')).pack(anchor='w')
-        list_frame = ttk.Frame(frame)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
-        self._all_tags_listbox = tk.Listbox(list_frame, selectmode=tk.SINGLE, height=8)
-        vsb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self._all_tags_listbox.yview)
-        self._all_tags_listbox.configure(yscrollcommand=vsb.set)
-        self._all_tags_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._all_tags_listbox.bind('<Double-Button-1>', self._add_selected_all_tag)
-
-    def _build_folder_tags_panel(self, parent):
-        frame = ttk.Frame(parent)
-        frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        ttk.Label(frame, text='Folder tree (double-click a folder to add its name):', font=('Arial', 9, 'bold')).pack(anchor='w')
-        tree_frame = ttk.Frame(frame)
-        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
-        self._folder_tag_tree = ttk.Treeview(tree_frame, show='tree')
-        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._folder_tag_tree.yview)
-        self._folder_tag_tree.configure(yscrollcommand=vsb.set)
-        self._folder_tag_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._folder_tag_tree.bind('<Double-Button-1>', self._add_selected_folder_tag)
+    # Tag palette: data loading
 
     def _refresh_advanced_tag_sources(self):
-        try:
-            if hasattr(self, '_all_tags_listbox'):
-                self._all_tags_listbox.delete(0, tk.END)
-                for row in metadata_store.get_all_tags():
-                    self._all_tags_listbox.insert(tk.END, row['tag_name'])
-        except Exception:
-            pass
+        """Reload the full tag list from DB in a background thread."""
+        def _worker() -> None:
+            try:
+                tags = sorted(row['tag_name'] for row in metadata_store.get_all_tags())
+            except Exception:
+                tags = []
+            try:
+                self.root.after(0, lambda: self._apply_palette_tags(tags))
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
 
-        try:
-            if hasattr(self, '_folder_tag_tree'):
-                tree = self._folder_tag_tree
-                for item in tree.get_children(''):
-                    tree.delete(item)
+    def _apply_palette_tags(self, tags: list) -> None:
+        self._palette_all_tags = tags
+        self._redraw_tag_palette()
 
-                root_path = Path(config_manager.app_config.tag_root_folder or str(self.root_folder))
-                if not root_path.exists():
-                    root_path = self.root_folder
+    # Tag palette: canvas drawing
 
-                def _insert(parent_id, folder: Path):
-                    node = tree.insert(parent_id, 'end', text=folder.name or str(folder), open=False, values=(str(folder),))
-                    try:
-                        children = sorted([f for f in folder.iterdir() if f.is_dir() and not f.name.startswith('.') and f.name.lower() != _THUMBS_FOLDER], key=lambda p: p.name.lower())
-                    except Exception:
-                        children = []
-                    for child in children[:200]:
-                        _insert(node, child)
-                    return node
+    def _get_palette_font(self):
+        if self._palette_font_obj is None:
+            from tkinter import font as _tkfont
+            self._palette_font_obj = _tkfont.Font(family='Arial', size=9, weight='bold')
+        return self._palette_font_obj
 
-                _insert('', root_path)
-        except Exception:
-            pass
+    def _schedule_palette_redraw(self) -> None:
+        """Debounce rapid redraws (resize, filter typing)."""
+        if self._palette_redraw_job is not None:
+            try:
+                self.root.after_cancel(self._palette_redraw_job)
+            except Exception:
+                pass
+        self._palette_redraw_job = self.root.after(30, self._redraw_tag_palette)
 
-    def _add_selected_all_tag(self, _event=None):
-        if getattr(self, '_all_tags_listbox', None) is None:
+    def _redraw_tag_palette(self) -> None:
+        """Redraw all tag chips on the single palette canvas."""
+        self._palette_redraw_job = None
+        if not hasattr(self, '_palette_canvas'):
             return
-        sel = self._all_tags_listbox.curselection()
-        if not sel:
-            return
-        tag = self._all_tags_listbox.get(sel[0])
-        self._add_tag_chip(tag, '+')
+        c = self._palette_canvas
+        c.delete('all')
+        self._palette_chip_regions = []
 
-    def _add_selected_folder_tag(self, _event=None):
-        if getattr(self, '_folder_tag_tree', None) is None:
+        canvas_w = c.winfo_width()
+        if canvas_w < 60:
+            canvas_w = 400
+
+        filt = getattr(self, '_tag_filter_var', None)
+        filt_text = filt.get().lower().strip() if filt else ''
+        extra = sorted(t for t in self._tag_states if t not in self._palette_all_tags)
+        all_display = sorted(set(self._palette_all_tags) | set(extra))
+        if filt_text:
+            all_display = [t for t in all_display if filt_text in t.lower()]
+
+        if not all_display:
+            msg = 'No tags match.' if filt_text else 'No tags found — click Refresh.'
+            c.create_text(10, 12, anchor='nw', text=msg,
+                          fill='#999999', font=('Arial', 9))
+            c.configure(scrollregion=(0, 0, canvas_w, 36))
             return
-        sel = self._folder_tag_tree.selection()
-        if not sel:
-            return
-        tag = self._folder_tag_tree.item(sel[0], 'text')
-        if tag:
-            self._add_tag_chip(tag, '+')
+
+        font   = self._get_palette_font()
+        CHIP_H = 26
+        PAD_X  = 10
+        GAP_X  = 5
+        GAP_Y  = 5
+        RADIUS = 6
+        x = y  = 6
+
+        for tag in all_display:
+            state = self._tag_states.get(tag, '')
+            if state == '+':
+                bg, border, fg = '#e8851a', '#c86a00', '#ffffff'
+            elif state == '-':
+                bg, border, fg = '#c62828', '#9a1c1c', '#ffffff'
+            else:
+                bg, border, fg = '#ffffff', '#888888', '#222222'
+
+            chip_w = font.measure(tag) + PAD_X * 2
+
+            if x + chip_w > canvas_w - 6 and x > 6:
+                x  = 6
+                y += CHIP_H + GAP_Y
+
+            x1, y1, x2, y2 = x, y, x + chip_w, y + CHIP_H
+            self._draw_palette_chip(c, x1, y1, x2, y2, bg, border, fg, tag, RADIUS, font)
+            self._palette_chip_regions.append((x1, y1, x2, y2, tag))
+            x += chip_w + GAP_X
+
+        total_h = y + CHIP_H + GAP_Y + 6
+        c.configure(scrollregion=(0, 0, canvas_w, total_h))
+
+    @staticmethod
+    def _draw_palette_chip(canvas, x1, y1, x2, y2, bg, border, fg, text, r, font):
+        """Draw one rounded-rectangle chip on a canvas."""
+        pts = [
+            x1 + r, y1,      x2 - r, y1,
+            x2,     y1,      x2,     y1 + r,
+            x2,     y2 - r,  x2,     y2,
+            x2 - r, y2,      x1 + r, y2,
+            x1,     y2,      x1,     y2 - r,
+            x1,     y1 + r,  x1,     y1,
+        ]
+        canvas.create_polygon(pts, smooth=True, fill=bg, outline=border, width=1.5)
+        canvas.create_text((x1 + x2) // 2, (y1 + y2) // 2,
+                           text=text, fill=fg, font=font, anchor='center')
+
+    def _on_palette_click(self, event) -> None:
+        cx = self._palette_canvas.canvasx(event.x)
+        cy = self._palette_canvas.canvasy(event.y)
+        for x1, y1, x2, y2, tag in self._palette_chip_regions:
+            if x1 <= cx <= x2 and y1 <= cy <= y2:
+                self._cycle_palette_tag(tag)
+                return
+
+    def _cycle_palette_tag(self, tag: str) -> None:
+        current = self._tag_states.get(tag, '')
+        if current == '':
+            self._tag_states[tag] = '+'
+        elif current == '+':
+            self._tag_states[tag] = '-'
+        else:
+            self._tag_states.pop(tag, None)
+        self._redraw_tag_palette()
+        if self._search_active or self._tag_states:
+            self.perform_tag_search()
+
 
     # \u2500\u2500 sort direction \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -2909,55 +3223,22 @@ class FileExplorer:
         self._hide_tag_suggestions()
 
     def _add_tag_chip(self, tag: str, state: str = '+'):
-        """Add or update a tag chip. state: '+' = include, '-' = exclude."""
+        """Add or update a tag. state: '+' = include, '-' = exclude."""
         if not tag:
             return
         self._tag_states[tag] = state
-        self._rebuild_chips()
-
-    def _cycle_chip(self, tag: str):
-        """Toggle a chip between include and exclude; remove on second exclude click."""
-        current = self._tag_states.get(tag, '+')
-        if current == '+':
-            self._tag_states[tag] = '-'
-        else:
-            del self._tag_states[tag]
-        self._rebuild_chips()
+        self._redraw_tag_palette()
         if self._search_active or self._tag_states:
             self.perform_tag_search()
 
-    def _rebuild_chips(self):
-        """Redraw the chip row from _tag_states."""
-        for w in self._chips_row.winfo_children():
-            w.destroy()
-        if not self._tag_states:
-            ttk.Label(self._chips_row,
-                      text='No active filters',
-                      foreground='#aaaaaa', font=('Arial', 9)).pack(side=tk.LEFT)
-            return
-        for tag, state in self._tag_states.items():
-            bg  = '#2e7d32' if state == '+' else '#c62828'   # green / red
-            sym = '\uff0b' if state == '+' else '\uff0d'
-            chip = tk.Frame(self._chips_row, bg=bg, padx=5, pady=2)
-            chip.pack(side=tk.LEFT, padx=3, pady=1)
-            # Label cycles +/\u2212
-            lbl = tk.Label(chip, text=f'{sym} {tag}', bg=bg, fg='white',
-                           font=('Arial', 9, 'bold'), cursor='hand2')
-            lbl.pack(side=tk.LEFT)
-            lbl.bind('<Button-1>', lambda _e, t=tag: self._cycle_chip(t))
-            # \u00d7 removes
-            x_btn = tk.Label(chip, text=' \u00d7', bg=bg, fg='#ffcccc',
-                             font=('Arial', 9, 'bold'), cursor='hand2')
-            x_btn.pack(side=tk.LEFT)
-            x_btn.bind('<Button-1>', lambda _e, t=tag: self._remove_chip(t))
-
     def _remove_chip(self, tag: str):
         self._tag_states.pop(tag, None)
-        self._rebuild_chips()
+        self._redraw_tag_palette()
         if self._search_active or self._tag_states:
             self.perform_tag_search()
         elif not self._tag_states:
             self.clear_search()
+
 
     # \u2500\u2500 autocomplete popup \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -3134,11 +3415,11 @@ class FileExplorer:
         self._last_search_results = []
         self._tag_states.clear()
         self.search_var.set('')
-        self._rebuild_chips()
+        self._redraw_tag_palette()
         try:
             self.search_clear_btn.config(state=tk.DISABLED)
             self.search_status_label.config(
-                text='Add tags \u2192 click chip to toggle include / exclude',
+                text='Click tag = include  ·  again = exclude  ·  again = clear',
                 foreground='gray')
         except Exception:
             pass
@@ -3201,11 +3482,11 @@ class FileExplorer:
             
             # For image files, create actual thumbnail
             if ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.ico', '.jfif']:
-                img = Image.open(path)
+                raw = Image.open(path)
                 try:
-                    img = ImageOps.exif_transpose(img)
+                    img = ImageOps.exif_transpose(raw)
                 except Exception:
-                    pass
+                    img = raw
 
                 # Convert RGBA to RGB if necessary
                 if img.mode in ('RGBA', 'LA', 'P'):
@@ -3217,10 +3498,9 @@ class FileExplorer:
 
                 # Resize to thumbnail size
                 img.thumbnail((size, size), Image.Resampling.LANCZOS)
-                
-                # Convert to PhotoImage
                 photo = ImageTk.PhotoImage(img)
-                
+                raw.close()
+
                 # Cache the thumbnail
                 with self._thumb_lock:
                     self._put_thumbnail_cache(cache_key, photo)
@@ -3232,17 +3512,19 @@ class FileExplorer:
                 # For non-image files, create a colored square with file type indicator
                 img = Image.new('RGB', (size, size), (240, 240, 240))
                 photo = ImageTk.PhotoImage(img)
+                img.close()
                 with self._thumb_lock:
                     self._put_thumbnail_cache(cache_key, photo)
                 dt = time.time() - t0
                 if dt > 0.05:
                     print(f"[UI] create_thumbnail_for_tree (non-image) took {dt:.3f}s")
                 return photo
-                
+
         except Exception as e:
             # If thumbnail creation fails, return a default icon
             img = Image.new('RGB', (size, size), (200, 200, 200))
             photo = ImageTk.PhotoImage(img)
+            img.close()
             return photo
     
     def load_detailed_view(self, folders, files):
@@ -5693,9 +5975,46 @@ class FileExplorer:
     # ------------------------------------------------------------------
 
     def _startup_sequence(self) -> None:
-        """Run startup tasks after the UI event loop is alive."""
-        self.initialize_ml_system()
+        """Run startup tasks after the UI event loop is alive.
+
+        Shows a blocking splash screen while the ML system initialises and the
+        initial directory listing loads.  Both tasks run concurrently; the
+        splash is dismissed as soon as **both** have finished (or after a 30 s
+        safety timeout in case something hangs).
+        """
+        splash = SplashScreen(self.root)
+
+        _done: dict = {'ml': False, 'dir': False}
+
+        def _check_done() -> None:
+            if all(_done.values()):
+                splash.set_status('Ready!')
+                # Brief "Ready" flash, then close splash and reveal the path
+                self.root.after(220, splash.dismiss)
+                self.root.after(540, lambda: self._nav_tree_reveal_path(self.current_path))
+
+        def _ml_done() -> None:
+            _done['ml'] = True
+            _check_done()
+
+        def _dir_done() -> None:
+            _done['dir'] = True
+            _check_done()
+
+        # Safety: always dismiss after 30 s (handles model-load hangs, etc.)
+        self.root.after(30_000, splash.dismiss)
+
+        # Hook into load_directory's _show callback
+        self._startup_dir_done_callback = _dir_done
+
+        splash.set_status('Loading directory…')
         self.load_directory(self.current_path)
+
+        self.initialize_ml_system(
+            status_callback=splash.set_status,
+            on_done=_ml_done,
+        )
+
         try:
             self._restore_ui_state()
         except Exception:
@@ -5709,7 +6028,6 @@ class FileExplorer:
             getattr(self, '_sort_dir_btn', None),
             getattr(self, 'search_clear_btn', None),
             getattr(self, '_all_tags_listbox', None),
-            getattr(self, '_folder_tag_tree', None),
         ]
         for widget in widgets:
             try:
@@ -5718,40 +6036,74 @@ class FileExplorer:
             except Exception:
                 pass
 
-    def initialize_ml_system(self):
-        """Initialize the ML system in background"""
+    def initialize_ml_system(self, status_callback=None, on_done=None):
+        """Initialize the ML system in a background thread.
+
+        *status_callback(msg)* — called (via root.after) with human-readable
+        step descriptions while work is in progress.
+        *on_done()* — called (via root.after) once the thread finishes,
+        regardless of success or failure.
+        """
+        def _status(msg: str) -> None:
+            if status_callback:
+                try:
+                    self.root.after(0, lambda m=msg: status_callback(m))
+                except Exception:
+                    pass
+
         def init_thread():
             try:
-                # Set the root folder first — this places the DB in the root
+                _status('Setting up working directory…')
                 self.controller.set_root_folder(str(self.root_folder))
-                self._ensure_inbox_exists()  # create _INBOX if needed
+                self._ensure_inbox_exists()
+
+                _status('Connecting to database…')
                 self.controller.initialize(str(self.current_path))
+
                 try:
                     self.root.after(0, self._refresh_trained_models)
                 except Exception:
                     pass
-                # Attempt to auto-load model if configured
+
+                _status('Checking for saved model…')
                 try:
+                    if model_storage.model_exists('latest'):
+                        _status('Loading model weights…')
                     self.controller.try_auto_load_model()
                 except Exception:
                     pass
-                # Update status based on whether model was loaded
+
                 if self.controller.tagging_engine.model_loaded:
-                    self.root.after(0, lambda: self.status_var.set("✓ ML system ready - Model loaded"))
+                    _status('✓ Model loaded — ready')
+                    self.root.after(0, lambda: self.status_var.set(
+                        "✓ ML system ready — model loaded"))
                     self.root.after(0, lambda: self.model_status_label.config(
                         text=f"✓ Model loaded ({config_manager.app_config.model_type})",
                         foreground='green'))
                 else:
-                    self.root.after(0, lambda: self.status_var.set("⚠ ML system ready - No model loaded (train a model first)"))
+                    _status('⚠ No saved model found')
+                    self.root.after(0, lambda: self.status_var.set(
+                        "⚠ ML system ready — no model loaded (train a model first)"))
                     self.root.after(0, lambda: self.model_status_label.config(
                         text="⚠ No model loaded", foreground='orange'))
+
                 self.root.after(0, self._sync_search_availability)
+
             except Exception as e:
-                self.root.after(0, lambda err=str(e)[:50]: self.status_var.set(f"ML initialization error: {err}"))
-                self.root.after(0, lambda: self.model_status_label.config(text="✗ Initialization error", foreground='red'))
-        
-        thread = threading.Thread(target=init_thread, daemon=True)
-        thread.start()
+                _status(f'Error: {str(e)[:80]}')
+                self.root.after(0, lambda err=str(e)[:50]:
+                    self.status_var.set(f"ML initialization error: {err}"))
+                self.root.after(0, lambda: self.model_status_label.config(
+                    text="✗ Initialization error", foreground='red'))
+
+            finally:
+                if on_done:
+                    try:
+                        self.root.after(0, on_done)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=init_thread, daemon=True).start()
     
     def on_image_selected(self, image_path: str):
         """Handle image selection for tagging (fast path on UI thread, DB work in background)"""
@@ -6104,36 +6456,63 @@ class FileExplorer:
         ttk.Button(config_window, text="Save Configuration", command=save_config).pack(pady=10)
     
     def _make_training_poll(self, state, progress_dialog, on_complete=None):
+        _drain_err_streak = [0]
+
         def _poll():
-            status, progress, metrics, details, terminal = state.drain()
+            done = False
+
+            # Drain is separated so a drain failure doesn't discard already-queued data.
+            try:
+                status, progress, metrics, details, terminal = state.drain()
+            except Exception as exc:
+                print(f"[TrainingPoll] drain error: {exc}")
+                _drain_err_streak[0] += 1
+                if _drain_err_streak[0] < 10:
+                    self.root.after(150, _poll)
+                else:
+                    self.controller.training_manager.progress_callback = None
+                return
+
+            # Commit terminal state BEFORE any UI call that might raise.
+            # If a widget error occurs later, the callback is already cleared
+            # and the poll will not be rescheduled — no zombie loops.
+            if terminal:
+                done = True
+                self.controller.training_manager.progress_callback = None
+
             if not progress_dialog._alive():
                 return
-            if status:
-                progress_dialog.update_status(status)
-            if progress is not None:
-                progress_dialog.update_progress(progress)
-            if metrics:
-                progress_dialog.update_metrics(
-                    metrics['train_acc'], metrics['val_acc'], metrics['overfitting_gap'])
-            for d in details:
-                progress_dialog.add_detail(d)
-            if details:
-                progress_dialog.scroll_to_end()
-            if terminal:
-                kind, val = terminal
-                self.controller.training_manager.progress_callback = None
-                if kind == 'complete':
-                    progress_dialog.mark_complete(True)
-                    if on_complete:
-                        on_complete()
-                elif kind == 'error':
-                    progress_dialog.add_detail(f"ERROR: {val}")
+
+            _drain_err_streak[0] = 0
+            try:
+                if status:
+                    progress_dialog.update_status(status)
+                if progress is not None:
+                    progress_dialog.update_progress(progress)
+                if metrics:
+                    progress_dialog.update_metrics(
+                        metrics['train_acc'], metrics['val_acc'], metrics['overfitting_gap'])
+                for d in details:
+                    progress_dialog.add_detail(d)
+                if details:
                     progress_dialog.scroll_to_end()
-                    progress_dialog.mark_complete(False)
-                elif kind == 'cancelled':
-                    progress_dialog.mark_cancelled()
-                return
-            self.root.after(150, _poll)
+                if terminal:
+                    kind, val = terminal
+                    if kind == 'complete':
+                        progress_dialog.mark_complete(True)
+                        if on_complete:
+                            on_complete()
+                    elif kind == 'error':
+                        progress_dialog.add_detail(f"ERROR: {val}")
+                        progress_dialog.scroll_to_end()
+                        progress_dialog.mark_complete(False)
+                    elif kind == 'cancelled':
+                        progress_dialog.mark_cancelled()
+            except Exception as exc:
+                print(f"[TrainingPoll] UI update error: {exc}")
+
+            if not done:
+                self.root.after(150, _poll)
         return _poll
 
     def train_from_folders(self):

@@ -46,7 +46,7 @@ class TrainingProgressDialog:
         details_frame = ttk.Frame(self.window)
         details_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
         self.details_text = tk.Text(details_frame, wrap=tk.WORD, height=14,
-                                    font=('Consolas', 9), state='disabled')
+                                    font=('Consolas', 9), state='disabled', undo=False)
         sb = ttk.Scrollbar(details_frame, command=self.details_text.yview)
         self.details_text.configure(yscrollcommand=sb.set)
         self.details_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -66,6 +66,7 @@ class TrainingProgressDialog:
 
         self.is_complete  = False
         self.is_cancelled = False
+        self._autoclose_job = None
 
     def _alive(self) -> bool:
         try:
@@ -129,6 +130,7 @@ class TrainingProgressDialog:
             self.progress_var.set(100)
         self._cancel_btn.config(state=tk.DISABLED)
         self._close_btn.config(state=tk.NORMAL)
+        self._schedule_autoclose()
 
     def mark_cancelled(self) -> None:
         self.is_cancelled = True
@@ -137,6 +139,22 @@ class TrainingProgressDialog:
         self.status_label.config(text="Training cancelled.")
         self._cancel_btn.config(state=tk.DISABLED)
         self._close_btn.config(state=tk.NORMAL)
+        self._schedule_autoclose(delay_ms=60_000)
+
+    def _schedule_autoclose(self, delay_ms: int = 120_000) -> None:
+        if not self._alive():
+            return
+        try:
+            if self._autoclose_job is not None:
+                self.window.after_cancel(self._autoclose_job)
+            self._autoclose_job = self.window.after(delay_ms, self._do_autoclose)
+        except Exception:
+            pass
+
+    def _do_autoclose(self) -> None:
+        self._autoclose_job = None
+        if self._alive():
+            self.window.destroy()
 
     def show(self) -> None:
         self.window.update_idletasks()

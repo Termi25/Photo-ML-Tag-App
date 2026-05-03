@@ -95,6 +95,7 @@ class COCOBenchmarkLoader:
 
         if progress_callback:
             progress_callback("status", "Parsing COCO annotations...")
+            progress_callback("detail", f"Annotations file: {ann_path.name}")
             progress_callback("progress", 50)
 
         with open(ann_path, "r", encoding="utf-8") as f:
@@ -131,6 +132,7 @@ class COCOBenchmarkLoader:
             progress_callback(
                 "status", f"Downloading / verifying {len(candidates)} images..."
             )
+            progress_callback("detail", f"Categories: {n_cats}  |  Images to load: {len(candidates)}")
 
         image_paths:  List[str]         = []
         multi_labels: List[List[float]] = []
@@ -154,6 +156,7 @@ class COCOBenchmarkLoader:
                 pct = 50 + (i + 1) / total * 35
                 progress_callback("progress", pct)
                 progress_callback("status", f"Images ready: {i + 1}/{total}")
+                progress_callback("detail", f"Images ready: {i + 1}/{total}")
 
         if not image_paths:
             print("No COCO images could be loaded.")
@@ -161,6 +164,7 @@ class COCOBenchmarkLoader:
 
         if progress_callback:
             progress_callback("status", "Seeding database with COCO ground truth...")
+            progress_callback("detail", f"Seeding {len(image_paths)} images into database...")
         self._seed_database(image_paths, multi_labels, sorted_cats)
 
         if progress_callback:
@@ -169,6 +173,7 @@ class COCOBenchmarkLoader:
                 "status",
                 f"COCO ready: {len(image_paths)} images, {n_cats} categories",
             )
+            progress_callback("detail", f"COCO data ready: {len(image_paths)} images, {n_cats} categories")
 
         print(
             f"COCO benchmark data: {len(image_paths)} images, "

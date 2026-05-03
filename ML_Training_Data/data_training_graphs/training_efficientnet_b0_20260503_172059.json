@@ -1,0 +1,23 @@
+{
+  "losses": [
+    0.4762800633907318,
+    0.5085452795028687,
+    0.4706869125366211,
+    0.3961937725543976,
+    0.3603399097919464
+  ],
+  "accuracies": [],
+  "epochs_completed": 5,
+  "total_time": 0.5999636650085449,
+  "n_images": 1,
+  "fine_tune": true,
+  "pre_accuracy": 75.0,
+  "pre_macro_f1": 0.08333333333333333,
+  "pre_micro_f1": 0.4,
+  "post_accuracy": 75.0,
+  "post_macro_f1": 0.08333333333333333,
+  "post_micro_f1": 0.4,
+  "delta_accuracy": 0.0,
+  "delta_macro_f1": 0.0,
+  "saved_at": "2026-05-03T17:20:59.890914"
+}

@@ -1,5 +1,6 @@
 """TrainingLoop — full supervised training with AMP, stratified splits, and fine-tuning."""
 
+import gc
 import time
 from collections import Counter
 from pathlib import Path
@@ -56,6 +57,7 @@ class TrainingLoop:
             'train_accuracies': [], 'val_accuracies': [],
         }
         self.multi_label_mode = False
+        self.data_source: str = ''
         # Held-out test split (populated when test_split > 0 in train())
         self.test_paths:  List[str] = []
         self.test_labels: list      = []
@@ -570,6 +572,23 @@ class TrainingLoop:
                 progress_callback('detail', f'Training completed in {elapsed:.2f}s')
                 progress_callback('detail', f'Best validation accuracy: {best_accuracy:.2f}%')
 
+            # Evaluate on the held-out test set while the model is still in memory.
+            if test_split > 0 and self.test_paths:
+                self.evaluate_on_test_set(progress_callback=progress_callback)
+
+        # Release the training model from memory — the inference engine loads its
+        # own copy via _auto_load_model(), so keeping this around just wastes RAM/VRAM.
+        if self.model is not None:
+            try:
+                self.model.cpu()
+            except Exception:
+                pass
+            del self.model
+            self.model = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return self.training_metrics
 
     # ------------------------------------------------------------------
@@ -636,6 +655,7 @@ class TrainingLoop:
             'training_metrics':  self.training_metrics,
             'hyperparameters':   config_manager.hyperparameters.to_dict(),
             'model_type':        model_type,
+            'data_source':       self.data_source,
         }
         print("[DEBUG] About to save model weights...", flush=True)
         try:
@@ -766,6 +786,11 @@ class TrainingLoop:
             progress_callback('detail', f'Test Acc: {test_acc:.2f}%  MacroF1: {macro_f1:.4f}  MicroF1: {micro_f1:.4f}')
 
         self.training_metrics['test_results'] = result
+        try:
+            model_type = config_manager.app_config.model_type
+            model_storage.save_test_results(result, model_type)
+        except Exception as exc:
+            print(f"Warning: could not save test results: {exc}", flush=True)
         return result
 
     def _save_training_graphs(self, model_type: str) -> None:
@@ -1057,6 +1082,16 @@ class TrainingLoop:
         dataset   = ImageDataset(image_paths, multi_labels, pre.transform, multi_label=True)
         loader    = DataLoader(dataset, batch_size=min(8, n), shuffle=True, num_workers=0)
 
+        # ── Baseline validation (before fine-tuning) ──────────────────────
+        self.model.eval()
+        val_loader_fixed = DataLoader(
+            dataset, batch_size=min(8, n), shuffle=False, num_workers=0
+        )
+        pre_acc, pre_macro_f1, pre_micro_f1 = self.validate(val_loader_fixed)
+        print(f"[Fine-tune] PRE-update  → Acc: {pre_acc:.2f}%  MacroF1: {pre_macro_f1:.4f}  MicroF1: {pre_micro_f1:.4f}")
+        if progress_callback:
+            progress_callback('detail', f'PRE fine-tune  → Acc: {pre_acc:.2f}%  MacroF1: {pre_macro_f1:.4f}')
+
         self.model.train()
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
         criterion = nn.BCEWithLogitsLoss()
@@ -1082,15 +1117,57 @@ class TrainingLoop:
                 progress_callback('progress', 100 * (epoch + 1) / epochs)
 
         elapsed = time.time() - t0
+
+        # ── Post-update validation ────────────────────────────────────────
         self.model.eval()
+        post_acc, post_macro_f1, post_micro_f1 = self.validate(val_loader_fixed)
+        print(f"[Fine-tune] POST-update → Acc: {post_acc:.2f}%  MacroF1: {post_macro_f1:.4f}  MicroF1: {post_micro_f1:.4f}")
+        if progress_callback:
+            progress_callback('detail', f'POST fine-tune → Acc: {post_acc:.2f}%  MacroF1: {post_macro_f1:.4f}')
+
         if progress_callback:
             progress_callback('status', 'Saving fine-tuned model…')
         self.save_model('latest')
         ft_metrics: Dict[str, Any] = {
-            'losses': ft_losses, 'accuracies': [], 'epochs_completed': epochs,
-            'total_time': elapsed, 'n_images': n, 'fine_tune': True,
+            'losses':           ft_losses,
+            'accuracies':       [],
+            'epochs_completed': epochs,
+            'total_time':       elapsed,
+            'n_images':         n,
+            'fine_tune':        True,
+            # Before / after validation deltas
+            'pre_accuracy':     pre_acc,
+            'pre_macro_f1':     pre_macro_f1,
+            'pre_micro_f1':     pre_micro_f1,
+            'post_accuracy':    post_acc,
+            'post_macro_f1':    post_macro_f1,
+            'post_micro_f1':    post_micro_f1,
+            'delta_accuracy':   post_acc    - pre_acc,
+            'delta_macro_f1':   post_macro_f1 - pre_macro_f1,
         }
         if progress_callback:
-            progress_callback('detail',   f'Fine-tuning done in {elapsed:.1f}s  |  Final loss: {ft_losses[-1]:.4f}')
+            progress_callback('detail',
+                f'Fine-tuning done in {elapsed:.1f}s  |  Final loss: {ft_losses[-1]:.4f}  |  '
+                f'ΔMacroF1: {ft_metrics["delta_macro_f1"]:+.4f}')
             progress_callback('complete', True)
+
+        # ── Persist fine-tune metrics to disk ─────────────────────────────
+        try:
+            model_type = config_manager.app_config.model_type
+            model_storage.save_training_stats(ft_metrics, model_type)
+            print(f"[Fine-tune] Metrics saved to data_training_graphs/")
+        except Exception as exc:
+            print(f"Warning: could not save fine-tune metrics: {exc}", flush=True)
+
+        if self.model is not None:
+            try:
+                self.model.cpu()
+            except Exception:
+                pass
+            del self.model
+            self.model = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return ft_metrics
