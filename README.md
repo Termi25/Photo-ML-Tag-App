@@ -187,6 +187,14 @@ The application opens to `../ExampleImageFolder` by default. Change `default_ima
 
 ## Usage
 
+### Quick Start Workflow
+
+1. **Initialize**: Run the application via `python file_explorer.py`. It opens to the default directory (`../ExampleImageFolder`).
+2. **Organize & Tag**: Browse your images, select ones you want to categorize, and add tags via the **Tag Management** sidebar.
+3. **Train the Model**: Once you have enough tagged images (at least 2 categories), go to **Machine Learning → Train from Tags**. Alternatively, if your images are already neatly sorted in folders, use **Train from Folders**.
+4. **Auto-Sort**: Navigate to a folder with untagged images, click **Machine Learning → Auto-Sort Images**, and apply the model's predicted tags.
+5. **Search**: Use the **Tag Search** bar to quickly find images matching specific tags across your entire collection.
+
 ### Training a Model
 
 **From folder structure** *(recommended for pre-organized collections)*
