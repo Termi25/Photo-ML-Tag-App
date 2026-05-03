@@ -331,19 +331,6 @@ Training graphs (loss / accuracy per epoch) are saved automatically to `data/tra
 
 ---
 
-## Research Context
-
-This application was developed as part of doctoral research comparing different ML strategies for personal image library management. The focus areas are:
-
-- **Supervised vs. unsupervised** classification performance on personal image collections
-- **Transfer learning** efficiency (pre-trained ImageNet weights vs. training from scratch)
-- **Human-in-the-loop** fine-tuning and its effect on convergence speed
-- **UX design** of an ML-assisted file management workflow
-
-See [Research_Methodology_Findings.md](Research_Methodology_Findings.md) and [TagStudio_Analysis.md](TagStudio_Analysis.md) for detailed findings.
-
----
-
 ## License
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
